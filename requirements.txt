@@ -10,9 +10,9 @@ Pillow==10.0.0
 requests==2.31.0
 
 # ML dependencies
-transformers==4.35.2
---extra-index-url https://download.pytorch.org/whl/cpu
+--find-links https://download.pytorch.org/whl/cpu
 torch==2.1.1+cpu
+transformers
 
 # Audio processing
 librosa==0.10.1
