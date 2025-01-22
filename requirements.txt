@@ -55,12 +55,15 @@ six==1.16.0
 smmap==5.0.2
 soundfile==0.13.0
 soxr==0.5.0.post1
+setuptools==69.1.1
+wheel==0.42.0
 streamlit==1.29.0
 numpy==1.24.3
 pillow==10.0.0
 requests==2.31.0
 transformers==4.35.2
-torch==2.1.1
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.1.1+cpu
 librosa==0.10.1
 tornado==6.4.2
 tqdm==4.67.1
