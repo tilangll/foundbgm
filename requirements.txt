@@ -5,16 +5,14 @@ pip==23.0.1
 
 # Streamlit and basic requirements
 # Core dependencies
-python==3.9.0
-streamlit==1.29.0
-numpy==1.24.3
-Pillow==10.0.0
-requests==2.31.0
+streamlit
+numpy
+Pillow
+requests
 
 # ML dependencies
---find-links https://download.pytorch.org/whl/cpu
-torch==2.1.1+cpu
-transformers==4.35.2
+torch
+transformers
 
 # Audio processing
-librosa==0.10.1
+librosa
