@@ -3,10 +3,10 @@ import os
 
 def test_bgm_matching():
     # 测试图片路径
-    image_path = "test_images/test.jpg"
+    image_path = "test_images/happy.jpg"  # 使用已创建的测试图片
     
     # 测试文本
-    test_text = "美丽典雅的紫色手织老布，纹理真漂亮迷人😍"
+    test_text = "今天阳光明媚，心情特别好！"  # 匹配欢快的图片
     
     # 创建匹配器实例
     matcher = SimpleBGMMatcher()
@@ -24,10 +24,8 @@ def test_bgm_matching():
         print(f"艺术家: {result['artist']}")
         print(f"时长: {result['duration']}秒")
         print(f"音乐链接: {result['audio_url']}")
-        print(f"许可证: {result['license']}")
-        print(f"情感标签: {', '.join(result['mood_tags'])}")
     else:
         print("未找到匹配的BGM")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     test_bgm_matching()

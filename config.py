@@ -1,0 +1,3 @@
+# 网易云音乐账号配置
+NETEASE_PHONE = '18666521665'
+NETEASE_PASSWORD = 'tianlunAee1！'

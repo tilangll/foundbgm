@@ -5,6 +5,9 @@ import requests
 from transformers import pipeline
 from typing import Dict, Any, List
 import random  # 添加随机模块
+from pyncm import apis
+import json
+from config import NETEASE_PHONE, NETEASE_PASSWORD
 
 class SimpleContentAnalyzer:
     def __init__(self):
@@ -41,36 +44,113 @@ class SimpleContentAnalyzer:
 class SimpleMusicLibrary:
     def __init__(self):
         self.music_database = {}
-        self.client_id = "47b332a2"
-        self.base_url = "https://api.jamendo.com/v3.0"
+        # 登录网易云音乐
+        apis.login.LoginViaCellphone(phone=NETEASE_PHONE, password=NETEASE_PASSWORD)
+        
+        # 添加心情标签
         self.mood_tags = {
-            'happy': ['happy', 'upbeat', 'energetic', 'positive'],
-            'sad': ['sad', 'melancholic', 'calm', 'peaceful'],
-            'neutral': ['ambient', 'instrumental', 'relaxing']
+            'happy': {
+                'all': ['欢快', '治愈', '元气', '快乐'],
+                'instrumental': ['轻音乐', '纯音乐', '钢琴', '治愈系'],
+                'vocal': ['流行', '欢快', '正能量', '励志']
+            },
+            'sad': {
+                'all': ['伤感', '孤独', '安静', '忧伤'],
+                'instrumental': ['钢琴', '轻音乐', '安静', '纯音乐'],
+                'vocal': ['伤感', '孤独', '情歌', '失恋']
+            },
+            'neutral': {
+                'all': ['轻音乐', '纯音乐', '背景音乐', '平静'],
+                'instrumental': ['轻音乐', '纯音乐', '钢琴曲', '冥想'],
+                'vocal': ['民谣', '轻音乐', '小清新', '温暖']
+            }
         }
+    def _is_instrumental(self, track) -> bool:
+        """判断是否为纯音乐"""
+        # 通过歌名关键词判断
+        instrumental_keywords = ['纯音乐', '钢琴', '轻音乐', 'instrumental', 'piano', '协奏曲', '交响']
+        name = track['name'].lower()
+        
+        # 1. 检查歌名关键词
+        if any(keyword in name for keyword in instrumental_keywords):
+            return True
+            
+        # 2. 检查歌手名称
+        artist = track['ar'][0]['name'] if track['ar'] else ''
+        if any(keyword in artist.lower() for keyword in ['钢琴家', '乐团', 'orchestra']):
+            return True
+            
+        return False
 
-    def fetch_music(self, mood: str = 'happy', limit: int = 10) -> List[Dict]:
-        endpoint = f"{self.base_url}/tracks/"
-        tags = self.mood_tags.get(mood, self.mood_tags['neutral'])
+    def fetch_music(self, mood: str = 'happy', limit: int = 10, music_type: str = "全部音乐") -> List[Dict]:
         all_tracks = []
         
-        for tag in tags:
-            params = {
-                'client_id': self.client_id,
-                'format': 'json',
-                'limit': limit,
-                'tags': tag,
-                'include': 'musicinfo',
-                'orderby': 'random'  # 添加随机排序
-            }
+        # 根据音乐类型选择标签
+        if music_type == "纯音乐":
+            tags = self.mood_tags[mood]['instrumental']
+        elif music_type == "带歌词音乐":
+            tags = self.mood_tags[mood]['vocal']
+        else:
+            tags = self.mood_tags[mood]['all']
             
+        for tag in tags:
             try:
-                response = requests.get(endpoint, params=params)
-                if response.status_code == 200:
-                    tracks = response.json()['results']
-                    all_tracks.extend(tracks)
+                # 先搜索关键词
+                search_result = apis.cloudsearch.GetSearchResult(tag, stype=1000, limit=5)  # 1000表示歌单
+                if 'result' not in search_result or 'playlists' not in search_result['result']:
+                    continue
+                    
+                playlists = search_result['result']['playlists']
+                
+                for playlist in playlists:
+                    try:
+                        # 获取歌单详情
+                        playlist_detail = apis.playlist.GetPlaylistInfo(playlist['id'])
+                        if 'playlist' not in playlist_detail or 'tracks' not in playlist_detail['playlist']:
+                            continue
+                            
+                        tracks = playlist_detail['playlist']['tracks']
+                        
+                        for track in tracks[:5]:
+                            try:
+                                # 获取音乐URL并检查有效性
+                                url_info = apis.track.GetTrackAudio([track['id']])
+                                if (not url_info or 'data' not in url_info or 
+                                    not url_info['data'] or 
+                                    not url_info['data'][0].get('url')):
+                                    print(f"跳过无效音乐URL: {track['name']}")
+                                    continue
+                                
+                                # 验证URL是否可访问
+                                audio_url = url_info['data'][0]['url']
+                                try:
+                                    response = requests.head(audio_url)
+                                    if response.status_code != 200:
+                                        print(f"音乐URL无法访问: {track['name']}")
+                                        continue
+                                except:
+                                    print(f"检查音乐URL时出错: {track['name']}")
+                                    continue
+                                    
+                                track_info = {
+                                    'id': str(track['id']),
+                                    'name': track['name'],
+                                    'artist': track['ar'][0]['name'] if track['ar'] else '未知艺术家',
+                                    'duration': track['dt'] // 1000 if 'dt' in track else 0,
+                                    'audio_url': audio_url,
+                                    'energy': 0.8 if mood == 'happy' else 0.3 if mood == 'sad' else 0.5,
+                                    'tempo': 120 if mood == 'happy' else 80 if mood == 'sad' else 100
+                                }
+                                all_tracks.append(track_info)
+                            except Exception as e:
+                                print(f"处理音乐信息时出错: {str(e)}")
+                                continue
+                                
+                    except Exception as e:
+                        print(f"获取歌单详情时出错: {str(e)}")
+                        continue
             except Exception as e:
-                print(f"获取音乐时出错: {str(e)}")
+                print(f"搜索歌单时出错: {str(e)}")
                 continue
         
         # 清空之前的数据库
@@ -80,18 +160,7 @@ class SimpleMusicLibrary:
         if all_tracks:
             selected_tracks = random.sample(all_tracks, min(limit, len(all_tracks)))
             for track in selected_tracks:
-                track_info = {
-                    'id': track['id'],
-                    'name': track['name'],
-                    'artist': track['artist_name'],
-                    'duration': track['duration'],
-                    'audio_url': track['audio'],
-                    'license': track['license_ccurl'],
-                    'mood_tags': track.get('tags', []),
-                    'energy': float(track.get('musicinfo', {}).get('energy', 0.5)),
-                    'tempo': float(track.get('musicinfo', {}).get('bpm', 120))
-                }
-                self.music_database[track['id']] = track_info
+                self.music_database[track['id']] = track
             
             return selected_tracks
         return []
@@ -100,9 +169,9 @@ class SimpleBGMMatcher:
     def __init__(self):
         self.content_analyzer = SimpleContentAnalyzer()
         self.music_library = SimpleMusicLibrary()
-        self.previous_matches = set()  # 记录之前的匹配
-    
-    def match_bgm(self, image_path: str, text: str) -> Dict:
+        self.previous_matches = set()
+
+    def match_bgm(self, image_path: str, text: str, music_type: str = "全部音乐") -> Dict:
         content_features = self.content_analyzer.analyze_content(image_path, text)
         
         # 根据情感值确定心情
@@ -114,8 +183,8 @@ class SimpleBGMMatcher:
         else:
             mood = 'neutral'
         
-        # 获取新的音乐列表
-        self.music_library.fetch_music(mood=mood, limit=20)
+        # 获取新的音乐列表，传入音乐类型参数
+        self.music_library.fetch_music(mood=mood, limit=20, music_type=music_type)
         
         # 计算所有可能的匹配
         matches = []
