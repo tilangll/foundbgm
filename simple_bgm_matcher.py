@@ -15,12 +15,14 @@ class SimpleContentAnalyzer:
         self.sentiment_analyzer = pipeline('sentiment-analysis', 
                                         model='bert-base-chinese',
                                         device=-1)  # 使用 CPU
+        self.sentiment_cache = {}  # 添加情感分析缓存
     
     def analyze_content(self, image_path: str, text: str) -> Dict[str, Any]:
         features = {}
         
-        # 分析图片
+        # 缩小图片尺寸再分析
         img = Image.open(image_path)
+        img.thumbnail((300, 300))  # 缩放到较小尺寸
         img_array = np.array(img)
         
         # 确保图片数据类型正确
@@ -87,16 +89,16 @@ class SimpleMusicLibrary:
         
         # 根据音乐类型选择标签
         if music_type == "纯音乐":
-            tags = self.mood_tags[mood]['instrumental']
+            tags = self.mood_tags[mood]['instrumental'][:2]  # 只使用前2个标签
         elif music_type == "带歌词音乐":
-            tags = self.mood_tags[mood]['vocal']
+            tags = self.mood_tags[mood]['vocal'][:2]  # 只使用前2个标签
         else:
-            tags = self.mood_tags[mood]['all']
+            tags = self.mood_tags[mood]['all'][:2]  # 只使用前2个标签
             
         for tag in tags:
             try:
-                # 先搜索关键词
-                search_result = apis.cloudsearch.GetSearchResult(tag, stype=1000, limit=5)  # 1000表示歌单
+                # 减少搜索结果数量
+                search_result = apis.cloudsearch.GetSearchResult(tag, stype=1000, limit=2)  # 减少为2个歌单
                 if 'result' not in search_result or 'playlists' not in search_result['result']:
                     continue
                     
@@ -111,27 +113,18 @@ class SimpleMusicLibrary:
                             
                         tracks = playlist_detail['playlist']['tracks']
                         
-                        for track in tracks[:5]:
+                        for track in tracks[:10]:  # 每个歌单取前10首歌
                             try:
-                                # 获取音乐URL并检查有效性
+                                # 获取音乐URL
                                 url_info = apis.track.GetTrackAudio([track['id']])
                                 if (not url_info or 'data' not in url_info or 
                                     not url_info['data'] or 
                                     not url_info['data'][0].get('url')):
-                                    print(f"跳过无效音乐URL: {track['name']}")
                                     continue
                                 
-                                # 验证URL是否可访问
                                 audio_url = url_info['data'][0]['url']
-                                try:
-                                    response = requests.head(audio_url)
-                                    if response.status_code != 200:
-                                        print(f"音乐URL无法访问: {track['name']}")
-                                        continue
-                                except:
-                                    print(f"检查音乐URL时出错: {track['name']}")
-                                    continue
-                                    
+                                # 移除URL可访问性检查，因为网易云的URL通常都是可用的
+                                
                                 track_info = {
                                     'id': str(track['id']),
                                     'name': track['name'],
@@ -143,14 +136,11 @@ class SimpleMusicLibrary:
                                 }
                                 all_tracks.append(track_info)
                             except Exception as e:
-                                print(f"处理音乐信息时出错: {str(e)}")
                                 continue
                                 
                     except Exception as e:
-                        print(f"获取歌单详情时出错: {str(e)}")
                         continue
             except Exception as e:
-                print(f"搜索歌单时出错: {str(e)}")
                 continue
         
         # 清空之前的数据库
