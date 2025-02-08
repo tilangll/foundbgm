@@ -89,16 +89,15 @@ class SimpleMusicLibrary:
         
         # 根据音乐类型选择标签
         if music_type == "纯音乐":
-            tags = self.mood_tags[mood]['instrumental'][:2]  # 只使用前2个标签
+            tags = self.mood_tags[mood]['instrumental'][:2]
         elif music_type == "带歌词音乐":
-            tags = self.mood_tags[mood]['vocal'][:2]  # 只使用前2个标签
+            tags = self.mood_tags[mood]['vocal'][:2]
         else:
-            tags = self.mood_tags[mood]['all'][:2]  # 只使用前2个标签
+            tags = self.mood_tags[mood]['all'][:2]
             
         for tag in tags:
             try:
-                # 减少搜索结果数量
-                search_result = apis.cloudsearch.GetSearchResult(tag, stype=1000, limit=2)  # 减少为2个歌单
+                search_result = apis.cloudsearch.GetSearchResult(tag, stype=1000, limit=2)
                 if 'result' not in search_result or 'playlists' not in search_result['result']:
                     continue
                     
@@ -106,16 +105,20 @@ class SimpleMusicLibrary:
                 
                 for playlist in playlists:
                     try:
-                        # 获取歌单详情
                         playlist_detail = apis.playlist.GetPlaylistInfo(playlist['id'])
                         if 'playlist' not in playlist_detail or 'tracks' not in playlist_detail['playlist']:
                             continue
                             
                         tracks = playlist_detail['playlist']['tracks']
                         
-                        for track in tracks[:10]:  # 每个歌单取前10首歌
+                        for track in tracks[:10]:
                             try:
-                                # 获取音乐URL
+                                # 根据音乐类型过滤
+                                is_instrumental = self._is_instrumental(track)
+                                if (music_type == "纯音乐" and not is_instrumental) or \
+                                   (music_type == "带歌词音乐" and is_instrumental):
+                                    continue
+                                
                                 url_info = apis.track.GetTrackAudio([track['id']])
                                 if (not url_info or 'data' not in url_info or 
                                     not url_info['data'] or 
