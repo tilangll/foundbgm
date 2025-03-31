@@ -12,21 +12,14 @@ from config import NETEASE_PHONE, NETEASE_PASSWORD
 
 class SimpleContentAnalyzer:
     def __init__(self):
-        # 设置设备
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        # 加载模型并移至正确设备
-        self.sentiment_analyzer = pipeline('sentiment-analysis', 
-                                        model='bert-base-chinese',
-                                        device=self.device)
-        # 设置模型为评估模式
-        if hasattr(self.sentiment_analyzer.model, 'eval'):
-            self.sentiment_analyzer.model.eval()
-        # 如果使用GPU，转换为半精度
-        if self.device.type == 'cuda':
-            self.sentiment_analyzer.model = self.sentiment_analyzer.model.half()
-        
+        # 使用已经训练好的中文情感分析模型
+        self.sentiment_analyzer = pipeline(
+            'sentiment-analysis', 
+            model='uer/roberta-base-finetuned-jd-binary-chinese',
+            device=-1  # 使用 CPU
+        )
         self.sentiment_cache = {}
-
+    
     def analyze_content(self, image_path: str, text: str) -> Dict[str, Any]:
         features = {}
         
@@ -46,11 +39,8 @@ class SimpleContentAnalyzer:
         try:
             with torch.no_grad():  # 禁用梯度计算
                 sentiment = self.sentiment_analyzer(text)
-                features['text_sentiment'] = sentiment[0]['score']
-                
-                # GPU内存管理
-                if self.device.type == 'cuda':
-                    torch.cuda.empty_cache()
+                # 将情感分数归一化到 0-1 范围
+                features['text_sentiment'] = float(sentiment[0]['score'])
         except Exception as e:
             print(f"情感分析出错: {str(e)}")
             features['text_sentiment'] = 0.5
