@@ -1,3 +1,4 @@
+# 移除 torch 导入
 import numpy as np
 from PIL import Image
 import librosa
@@ -7,16 +8,14 @@ from typing import Dict, Any, List
 import random
 from pyncm import apis
 import json
-import torch
 from config import NETEASE_PHONE, NETEASE_PASSWORD
 
 class SimpleContentAnalyzer:
     def __init__(self):
-        # 修改为使用更基础的中文情感分析模型
+        # 使用基础的情感分析模型
         self.sentiment_analyzer = pipeline(
-            'sentiment-analysis', 
-            model='bert-base-chinese',
-            device=-1  # 使用 CPU
+            task='sentiment-analysis',
+            model='bert-base-chinese'
         )
         self.sentiment_cache = {}
     
@@ -82,8 +81,22 @@ class SimpleMusicLibrary:
         artist = track['ar'][0]['name'] if track['ar'] else ''
         if any(keyword in artist.lower() for keyword in ['钢琴家', '乐团', 'orchestra']):
             return True
-            
-        return False
+        
+        # 3. 尝试获取歌词判断
+        try:
+            lyrics_result = apis.track.GetTrackLyrics(track['id'])
+            if 'lrc' in lyrics_result and lyrics_result['lrc'].get('lyric'):
+                lyrics = lyrics_result['lrc']['lyric']
+                # 如果歌词内容很少（只有时间标记），可能是纯音乐
+                lyrics_lines = [line for line in lyrics.split('\n') if line.strip()]
+                if len(lyrics_lines) < 5:
+                    return True
+                return False
+            return True  # 如果没有歌词，认为是纯音乐
+        except Exception as e:
+            print(f"获取歌词失败: {str(e)}")
+            # 获取歌词失败时，回退到关键词判断
+            return False
 
     def _ensure_login(self):
         """确保登录状态"""
@@ -179,7 +192,7 @@ class SimpleBGMMatcher:
         self.content_analyzer = SimpleContentAnalyzer()
         self.music_library = SimpleMusicLibrary()
         self.previous_matches = set()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # 移除 device 相关代码
 
     def match_bgm(self, image_path: str, text: str, music_type: str = "全部音乐") -> Dict:
         content_features = self.content_analyzer.analyze_content(image_path, text)
