@@ -60,8 +60,7 @@ class SimpleContentAnalyzer:
 class SimpleMusicLibrary:
     def __init__(self):
         self.music_database = {}
-        # 登录网易云音乐
-        apis.login.LoginViaCellphone(phone=NETEASE_PHONE, password=NETEASE_PASSWORD)
+        self.is_logged_in = False
         
         # 添加心情标签
         self.mood_tags = {
@@ -98,7 +97,22 @@ class SimpleMusicLibrary:
             
         return False
 
+    def _ensure_login(self):
+        """确保登录状态"""
+        if not self.is_logged_in:
+            try:
+                apis.login.LoginViaCellphone(phone=NETEASE_PHONE, password=NETEASE_PASSWORD)
+                self.is_logged_in = True
+            except Exception as e:
+                print(f"网易云音乐登录失败: {str(e)}")
+                return False
+        return True
+
     def fetch_music(self, mood: str = 'happy', limit: int = 10, music_type: str = "全部音乐") -> List[Dict]:
+        # 确保登录
+        if not self._ensure_login():
+            return []
+            
         all_tracks = []
         
         # 根据音乐类型选择标签
