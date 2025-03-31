@@ -4,28 +4,37 @@ import librosa
 import requests
 from transformers import pipeline
 from typing import Dict, Any, List
-import random  # 添加随机模块
+import random
 from pyncm import apis
 import json
+import torch
 from config import NETEASE_PHONE, NETEASE_PASSWORD
 
 class SimpleContentAnalyzer:
     def __init__(self):
-        # 修改为使用更基础的中文模型
+        # 设置设备
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # 加载模型并移至正确设备
         self.sentiment_analyzer = pipeline('sentiment-analysis', 
                                         model='bert-base-chinese',
-                                        device=-1)  # 使用 CPU
-        self.sentiment_cache = {}  # 添加情感分析缓存
-    
+                                        device=self.device)
+        # 设置模型为评估模式
+        if hasattr(self.sentiment_analyzer.model, 'eval'):
+            self.sentiment_analyzer.model.eval()
+        # 如果使用GPU，转换为半精度
+        if self.device.type == 'cuda':
+            self.sentiment_analyzer.model = self.sentiment_analyzer.model.half()
+        
+        self.sentiment_cache = {}
+
     def analyze_content(self, image_path: str, text: str) -> Dict[str, Any]:
         features = {}
         
-        # 缩小图片尺寸再分析
+        # 图片处理部分保持不变
         img = Image.open(image_path)
-        img.thumbnail((300, 300))  # 缩放到较小尺寸
+        img.thumbnail((300, 300))
         img_array = np.array(img)
         
-        # 确保图片数据类型正确
         if img_array.dtype == np.uint8:
             features['brightness'] = float(np.mean(img_array))
             features['color_variance'] = float(np.std(img_array))
@@ -33,13 +42,18 @@ class SimpleContentAnalyzer:
             features['brightness'] = float(np.mean(img_array * 255))
             features['color_variance'] = float(np.std(img_array * 255))
         
-        # 分析文字情感
+        # 优化情感分析部分
         try:
-            sentiment = self.sentiment_analyzer(text)
-            features['text_sentiment'] = sentiment[0]['score']
+            with torch.no_grad():  # 禁用梯度计算
+                sentiment = self.sentiment_analyzer(text)
+                features['text_sentiment'] = sentiment[0]['score']
+                
+                # GPU内存管理
+                if self.device.type == 'cuda':
+                    torch.cuda.empty_cache()
         except Exception as e:
             print(f"情感分析出错: {str(e)}")
-            features['text_sentiment'] = 0.5  # 默认中性情感
+            features['text_sentiment'] = 0.5
         
         return features
 
@@ -163,6 +177,7 @@ class SimpleBGMMatcher:
         self.content_analyzer = SimpleContentAnalyzer()
         self.music_library = SimpleMusicLibrary()
         self.previous_matches = set()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def match_bgm(self, image_path: str, text: str, music_type: str = "全部音乐") -> Dict:
         content_features = self.content_analyzer.analyze_content(image_path, text)
