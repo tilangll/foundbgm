@@ -1,9 +1,16 @@
 import os
 import streamlit as st
 
-# 优先使用 Streamlit Secrets，然后是环境变量
-NETEASE_PHONE = st.secrets.get("NETEASE_PHONE", os.getenv('NETEASE_PHONE'))
-NETEASE_PASSWORD = st.secrets.get("NETEASE_PASSWORD", os.getenv('NETEASE_PASSWORD'))
-
-if not NETEASE_PHONE or not NETEASE_PASSWORD:
-    raise ValueError("请在 Streamlit Secrets 或环境变量中设置 NETEASE_PHONE 和 NETEASE_PASSWORD")
+try:
+    # 尝试从 Streamlit Secrets 获取
+    NETEASE_PHONE = st.secrets["NETEASE_PHONE"]
+    NETEASE_PASSWORD = st.secrets["NETEASE_PASSWORD"]
+except Exception:
+    try:
+        # 尝试从环境变量获取
+        NETEASE_PHONE = os.environ["NETEASE_PHONE"]
+        NETEASE_PASSWORD = os.environ["NETEASE_PASSWORD"]
+    except KeyError:
+        # 如果都没有，使用默认值（仅用于本地开发）
+        NETEASE_PHONE = "18666521665"
+        NETEASE_PASSWORD = "tianlunAee1！"
