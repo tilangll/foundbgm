@@ -12,10 +12,10 @@ from config import NETEASE_PHONE, NETEASE_PASSWORD
 
 class SimpleContentAnalyzer:
     def __init__(self):
-        # 使用已经训练好的中文情感分析模型
+        # 修改为使用更基础的中文情感分析模型
         self.sentiment_analyzer = pipeline(
             'sentiment-analysis', 
-            model='uer/roberta-base-finetuned-jd-binary-chinese',
+            model='bert-base-chinese',
             device=-1  # 使用 CPU
         )
         self.sentiment_cache = {}
@@ -35,12 +35,10 @@ class SimpleContentAnalyzer:
             features['brightness'] = float(np.mean(img_array * 255))
             features['color_variance'] = float(np.std(img_array * 255))
         
-        # 优化情感分析部分
+        # 简化情感分析部分
         try:
-            with torch.no_grad():  # 禁用梯度计算
-                sentiment = self.sentiment_analyzer(text)
-                # 将情感分数归一化到 0-1 范围
-                features['text_sentiment'] = float(sentiment[0]['score'])
+            sentiment = self.sentiment_analyzer(text)
+            features['text_sentiment'] = float(sentiment[0]['score'])
         except Exception as e:
             print(f"情感分析出错: {str(e)}")
             features['text_sentiment'] = 0.5
