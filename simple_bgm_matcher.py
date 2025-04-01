@@ -10,21 +10,13 @@ from pyncm import apis
 import json
 from config import NETEASE_PHONE, NETEASE_PASSWORD
 
-# 添加新的导入
-from transformers import AutoImageProcessor, AutoModelForImageClassification
-import torch
-from PIL import Image
-
 class SimpleContentAnalyzer:
     def __init__(self):
-        # 使用基础的情感分析模型
+        # 只保留情感分析模型
         self.sentiment_analyzer = pipeline(
             task='sentiment-analysis',
             model='bert-base-chinese'
         )
-        # 添加图像分析模型
-        self.image_processor = AutoImageProcessor.from_pretrained("microsoft/resnet-50")
-        self.image_model = AutoModelForImageClassification.from_pretrained("microsoft/resnet-50")
         self.sentiment_cache = {}
     
     def analyze_content(self, image_path: str, text: str) -> Dict[str, Any]:
@@ -42,27 +34,8 @@ class SimpleContentAnalyzer:
         else:
             features['brightness'] = float(np.mean(img_array * 255))
             features['color_variance'] = float(np.std(img_array * 255))
-        
-        # 添加图像内容分析
-        try:
-            inputs = self.image_processor(img, return_tensors="pt")
-            with torch.no_grad():
-                outputs = self.image_model(**inputs)
-                probs = outputs.logits.softmax(dim=-1)
-                # 获取前三个最可能的场景/物体
-                top_probs, top_indices = torch.topk(probs[0], k=3)
-                features['image_scenes'] = [
-                    {
-                        'label': self.image_model.config.id2label[idx.item()],
-                        'confidence': prob.item()
-                    }
-                    for prob, idx in zip(top_probs, top_indices)
-                ]
-        except Exception as e:
-            print(f"图像内容分析出错: {str(e)}")
-            features['image_scenes'] = []
 
-        # 情感分析部分保持不变
+        # 情感分析
         try:
             sentiment = self.sentiment_analyzer(text)
             features['text_sentiment'] = float(sentiment[0]['score'])

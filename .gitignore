@@ -1,1 +1,3 @@
-.env
+__pycache__/
+*.pyc
+test_image.jpg
