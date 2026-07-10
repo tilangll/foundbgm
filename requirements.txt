@@ -1,10 +1,8 @@
 # Core dependencies
-streamlit
-numpy
-Pillow
-requests
-torch
-transformers
-librosa
-pyncm
+streamlit==1.44.0
+numpy==2.1.3
+Pillow==11.1.0
+requests==2.32.3
+torch==2.6.0
+transformers==4.50.3
 protobuf==3.20.0
