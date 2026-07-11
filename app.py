@@ -1,5 +1,6 @@
 import base64
 import html
+import json
 import os
 import time
 
@@ -767,7 +768,27 @@ def render_result():
     composer = safe_text("composer", "未知")
     artist = safe_text("artist", "未知艺术家")
     name = safe_text("name", "未命名歌曲")
-    audio_url = html.escape(str(result.get("audio_url") or ""), quote=True)
+    audio_mime_type = html.escape(str(result.get("audio_mime_type") or "audio/mpeg"), quote=True)
+    raw_audio_urls = result.get("audio_urls") or [result.get("audio_url")]
+    audio_urls = []
+    for url in raw_audio_urls:
+        if url and url not in audio_urls:
+            audio_urls.append(str(url))
+    audio_sources = [
+        {"url": html.escape(url, quote=True), "type": audio_mime_type}
+        for url in audio_urls
+    ]
+    audio_sources_html = "\n".join(
+        f'<source src="{source["url"]}" type="{source["type"]}">'
+        for source in audio_sources
+    )
+    audio_sources_js = json.dumps(
+        [
+            {"url": url, "type": str(result.get("audio_mime_type") or "audio/mpeg")}
+            for url in audio_urls
+        ],
+        ensure_ascii=False,
+    )
     duration = format_duration(result.get("duration"))
 
     result_css = """
@@ -844,10 +865,9 @@ def render_result():
         }
         .record-wrap {
             position: relative;
-            width: min(40vw, 360px);
-            height: min(40vw, 360px);
-            min-width: 220px;
-            min-height: 220px;
+            width: clamp(220px, 34vmin, 360px);
+            aspect-ratio: 1 / 1;
+            flex: 0 0 auto;
             margin-bottom: 1.75rem;
             filter: drop-shadow(0 24px 36px rgba(0, 0, 0, 0.38));
             animation: spin 12s linear infinite;
@@ -858,15 +878,18 @@ def render_result():
             inset: 0;
             width: 100%;
             height: 100%;
+            display: block;
+            object-fit: contain;
         }
         .record-center {
             position: absolute;
             top: 50%;
             left: 50%;
             width: 36%;
-            height: 36%;
+            aspect-ratio: 1 / 1;
             transform: translate(-50%, -50%);
             border-radius: 50%;
+            overflow: hidden;
             background-position: center;
             background-size: cover;
             box-shadow:
@@ -942,6 +965,13 @@ def render_result():
             cursor: pointer;
         }
         audio { display: block; width: 100%; }
+        .audio-status {
+            min-height: 1.05rem;
+            margin-top: 0.42rem;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.68rem;
+            letter-spacing: 0.04em;
+        }
         @keyframes spin {
             from { transform: rotate(0deg); }
             to { transform: rotate(360deg); }
@@ -951,7 +981,7 @@ def render_result():
             .result-top { top: 0.9rem; left: 0.9rem; right: 0.9rem; }
             .result-brand { font-size: 0.65rem; }
             .ghost-button { display: none; }
-            .record-wrap { width: min(62vw, 300px); height: min(62vw, 300px); }
+            .record-wrap { width: min(62vmin, 300px); }
             .meta-grid { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
         }
     """
@@ -983,7 +1013,8 @@ def render_result():
 
                     <div class="audio-panel">
                         <div class="player-head"><span>NOW PLAYING</span><button class="play-toggle" id="play-toggle" type="button">播放音乐</button></div>
-                        <audio id="audio" controls autoplay preload="auto"><source src="{audio_url}" type="audio/mpeg"></audio>
+                        <audio id="audio" controls preload="auto">{audio_sources_html}</audio>
+                        <div class="audio-status" id="audio-status"></div>
                     </div>
                 </div>
             </div>
@@ -991,19 +1022,91 @@ def render_result():
                 const audio = document.getElementById("audio");
                 const toggle = document.getElementById("play-toggle");
                 const record = document.querySelector(".record-wrap");
+                const status = document.getElementById("audio-status");
+                const sources = {audio_sources_js};
+                let sourceIndex = 0;
+                let userRequestedPlay = false;
+
+                const setStatus = (message) => {{
+                    status.textContent = message || "";
+                }};
                 const sync = () => {{
-                    const paused = audio.paused;
-                    toggle.textContent = paused ? "播放音乐" : "暂停播放";
-                    record.classList.toggle("is-paused", paused);
+                    const buffering = userRequestedPlay && !audio.paused && audio.readyState < 3;
+                    toggle.textContent = audio.paused ? "播放音乐" : (buffering ? "加载中..." : "暂停播放");
+                    record.classList.toggle("is-paused", audio.paused || buffering);
+                }};
+                const loadSource = (index, shouldPlay = false) => {{
+                    if (!sources[index]) {{
+                        setStatus("暂无可播放音频源，返回后再匹配一首试试。");
+                        sync();
+                        return;
+                    }}
+                    sourceIndex = index;
+                    audio.src = sources[sourceIndex].url;
+                    audio.load();
+                    setStatus("音频正在从 Internet Archive 加载，可能需要几秒。");
+                    if (shouldPlay) {{
+                        sync();
+                        audio.play().catch(() => {{
+                            setStatus("浏览器拦截了自动播放，请再点一次播放。");
+                            sync();
+                        }});
+                    }}
                 }};
                 toggle.addEventListener("click", () => {{
-                    if (audio.paused) {{ audio.play().catch(() => {{}}); }}
-                    else {{ audio.pause(); }}
+                    if (audio.paused) {{
+                        userRequestedPlay = true;
+                        if (!audio.currentSrc && sources.length) {{
+                            loadSource(sourceIndex, true);
+                        }} else {{
+                            setStatus("正在请求音频，网络慢时会多等几秒。");
+                            sync();
+                            audio.play().catch(() => {{
+                                setStatus("浏览器拦截了自动播放，请再点一次播放。");
+                                sync();
+                            }});
+                        }}
+                    }} else {{
+                        audio.pause();
+                    }}
+                }});
+                audio.addEventListener("loadstart", () => {{
+                    if (!userRequestedPlay) setStatus("音频正在从 Internet Archive 加载，可能需要几秒。");
+                    sync();
+                }});
+                audio.addEventListener("loadedmetadata", () => {{
+                    if (!userRequestedPlay) setStatus("音频已找到，点击播放音乐。");
+                    sync();
+                }});
+                audio.addEventListener("canplay", () => {{
+                    if (!userRequestedPlay) setStatus("音频已就绪，点击播放音乐。");
+                    sync();
+                }});
+                audio.addEventListener("waiting", () => {{
+                    setStatus("音频正在缓冲，网络慢时会多等几秒。");
+                    sync();
+                }});
+                audio.addEventListener("stalled", () => {{
+                    setStatus("音频加载较慢，正在继续尝试...");
+                    sync();
+                }});
+                audio.addEventListener("error", () => {{
+                    if (sourceIndex + 1 < sources.length) {{
+                        loadSource(sourceIndex + 1, userRequestedPlay);
+                        return;
+                    }}
+                    setStatus("音频源加载失败，返回后再匹配一首试试。");
+                    sync();
                 }});
                 audio.addEventListener("play", sync);
+                audio.addEventListener("playing", () => {{
+                    setStatus("");
+                    sync();
+                }});
                 audio.addEventListener("pause", sync);
                 audio.addEventListener("ended", sync);
-                audio.play().catch(sync);
+                loadSource(0, false);
+                sync();
             </script>
         </body>
         </html>

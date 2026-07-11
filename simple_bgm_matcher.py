@@ -50,6 +50,7 @@ class SimpleMusicLibrary:
     SEARCH_API = "https://archive.org/advancedsearch.php"
     METADATA_API = "https://archive.org/metadata"
     DOWNLOAD_BASE = "https://archive.org/download"
+    STREAM_BASE = "https://archive.org/serve"
 
     # Keep the request fan-out bounded so a single match stays responsive.
     SEARCH_ROWS = 18
@@ -58,6 +59,13 @@ class SimpleMusicLibrary:
     CACHE_TTL_SECONDS = 600
     REQUEST_TIMEOUT = 10
     AUDIO_EXTENSIONS = {".mp3", ".ogg", ".oga", ".m4a", ".wav"}
+    AUDIO_MIME_TYPES = {
+        ".mp3": "audio/mpeg",
+        ".ogg": "audio/ogg",
+        ".oga": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".wav": "audio/wav",
+    }
     SKIP_FILE_MARKERS = {
         "cover",
         "thumbnail",
@@ -185,11 +193,32 @@ class SimpleMusicLibrary:
         extension = os.path.splitext(lowered)[1]
         if extension not in self.AUDIO_EXTENSIONS:
             return False
+        if "/__macosx/" in lowered or lowered.startswith("__macosx/"):
+            return False
         if any(marker in os.path.basename(lowered) for marker in self.SKIP_FILE_MARKERS):
             return False
         if str(file_info.get("private", "")).lower() == "true":
             return False
+        raw_size = file_info.get("size")
+        if raw_size not in (None, ""):
+            try:
+                if int(float(raw_size)) <= 0:
+                    return False
+            except (TypeError, ValueError):
+                pass
         return True
+
+    def _audio_url_variants(self, identifier: str, filename: str) -> List[str]:
+        encoded_identifier = quote(identifier, safe="")
+        encoded_filename = quote(filename, safe="/")
+        return [
+            f"{self.DOWNLOAD_BASE}/{encoded_identifier}/{encoded_filename}",
+            f"{self.STREAM_BASE}/{encoded_identifier}/{encoded_filename}",
+        ]
+
+    def _audio_mime_type(self, filename: str) -> str:
+        extension = os.path.splitext(filename.lower())[1]
+        return self.AUDIO_MIME_TYPES.get(extension, "audio/mpeg")
 
     @staticmethod
     def _track_profile(text: str, mood: str) -> tuple[float, int]:
@@ -263,17 +292,16 @@ class SimpleMusicLibrary:
             track_name = file_title if len(audio_files) > 1 and file_title else title
             energy, tempo = self._track_profile(f"{context} {filename}", mood)
             track_id = f"{identifier}:{filename}"
-            audio_url = (
-                f"{self.DOWNLOAD_BASE}/{quote(identifier, safe='')}/"
-                f"{quote(filename, safe='/')}"
-            )
+            audio_urls = self._audio_url_variants(identifier, filename)
             tracks.append(
                 {
                     "id": track_id,
                     "name": track_name,
                     "artist": creator,
                     "duration": self._parse_duration(file_info.get("length")),
-                    "audio_url": audio_url,
+                    "audio_url": audio_urls[0],
+                    "audio_urls": audio_urls,
+                    "audio_mime_type": self._audio_mime_type(filename),
                     "lyricist": "未知",
                     "composer": creator,
                     "energy": energy,
