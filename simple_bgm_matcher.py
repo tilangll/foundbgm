@@ -1,10 +1,7 @@
-import os
 import random
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Tuple
-from urllib.parse import quote
 
 import numpy as np
 import requests
@@ -47,43 +44,19 @@ class SimpleContentAnalyzer:
 
 
 class SimpleMusicLibrary:
-    """Small Internet Archive adapter for openly published audio items."""
+    """Audius adapter that searches tracks and validates stream playback."""
 
-    SEARCH_API = "https://archive.org/advancedsearch.php"
-    SCRAPE_APIS = (
-        "https://archive.org/services/search/v1/scrape",
-        "https://api.archive.org/search/v1/scrape",
-    )
-    METADATA_API = "https://archive.org/metadata"
-    DOWNLOAD_BASE = "https://archive.org/download"
-    STREAM_BASE = "https://archive.org/serve"
+    AUDIUS_API = "https://api.audius.co/v1"
+    APP_NAME = "YiShunSceneBGM"
 
-    # Keep the request fan-out bounded so a single match stays responsive.
-    SEARCH_ROWS = 18
-    METADATA_ITEMS = 10
+    # Keep requests quick so the UI does not feel stuck when a provider is slow.
+    SEARCH_ROWS = 24
     MAX_TRACKS = 24
-    CACHE_TTL_SECONDS = 600
-    REQUEST_TIMEOUT = 10
-    AUDIO_VALIDATION_LIMIT = 8
-    STREAM_CHECK_TIMEOUT = 6
+    CACHE_TTL_SECONDS = 300
+    REQUEST_TIMEOUT = 8
+    AUDIO_VALIDATION_LIMIT = 10
+    STREAM_CHECK_TIMEOUT = 8
     STREAM_CHECK_RANGE = "bytes=0-2047"
-    AUDIO_EXTENSIONS = {".mp3", ".ogg", ".oga", ".m4a", ".wav"}
-    AUDIO_MIME_TYPES = {
-        ".mp3": "audio/mpeg",
-        ".ogg": "audio/ogg",
-        ".oga": "audio/ogg",
-        ".m4a": "audio/mp4",
-        ".wav": "audio/wav",
-    }
-    SKIP_FILE_MARKERS = {
-        "cover",
-        "thumbnail",
-        "spectrogram",
-        "waveform",
-        "sample",
-        "preview",
-        "readme",
-    }
 
     def __init__(self):
         self.music_database: Dict[str, Dict[str, Any]] = {}
@@ -91,11 +64,11 @@ class SimpleMusicLibrary:
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "YiShun-SceneBGM/0.1"})
         retries = Retry(
-            total=2,
-            connect=2,
-            read=2,
-            status=2,
-            backoff_factor=0.35,
+            total=1,
+            connect=1,
+            read=1,
+            status=1,
+            backoff_factor=0.2,
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset(["GET"]),
             raise_on_status=False,
@@ -106,19 +79,19 @@ class SimpleMusicLibrary:
         self.query_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
         self.mood_tags = {
             "happy": {
-                "all": ["upbeat", "happy", "summer", "pop"],
-                "instrumental": ["instrumental", "upbeat", "cinematic", "ambient"],
-                "vocal": ["vocal", "pop", "indie", "dance"],
+                "all": ["indie pop", "summer dance", "upbeat electronic", "feel good"],
+                "instrumental": ["instrumental upbeat", "cinematic chill", "lofi upbeat"],
+                "vocal": ["indie pop", "dance pop", "summer pop", "upbeat vocal"],
             },
             "sad": {
-                "all": ["sad", "melancholic", "piano", "chill"],
-                "instrumental": ["instrumental", "piano", "ambient", "sad"],
-                "vocal": ["vocal", "acoustic", "indie", "ballad"],
+                "all": ["indie ballad", "melancholy", "piano chill", "slow acoustic"],
+                "instrumental": ["sad instrumental", "piano ambient", "cinematic piano"],
+                "vocal": ["indie ballad", "acoustic vocal", "sad pop"],
             },
             "neutral": {
-                "all": ["chill", "calm", "ambient", "indie"],
-                "instrumental": ["instrumental", "ambient", "calm", "background"],
-                "vocal": ["vocal", "folk", "acoustic", "indie"],
+                "all": ["chill", "lofi", "ambient electronic", "indie"],
+                "instrumental": ["instrumental chill", "ambient", "background music"],
+                "vocal": ["indie vocal", "folk song", "acoustic singer"],
             },
         }
 
@@ -128,96 +101,44 @@ class SimpleMusicLibrary:
             return ", ".join(str(item) for item in value)
         return str(value or "")
 
-    def _build_query(self, mood: str, music_type: str, broad: bool = False) -> str:
+    def _build_queries(self, mood: str, music_type: str) -> List[str]:
         if music_type == "纯音乐":
-            tags = self.mood_tags[mood]["instrumental"]
+            queries = self.mood_tags[mood]["instrumental"]
         elif music_type == "带歌词音乐":
-            tags = self.mood_tags[mood]["vocal"]
+            queries = self.mood_tags[mood]["vocal"]
         else:
-            tags = self.mood_tags[mood]["all"]
-
-        tag_query = " OR ".join(
-            f"title:{tag} OR subject:{tag}" for tag in tags[:4]
-        )
-        source_filter = "mediatype:audio" if broad else "collection:netlabels AND mediatype:audio"
-        return f"{source_filter} AND ({tag_query})"
+            queries = self.mood_tags[mood]["all"]
+        return list(queries) + self.mood_tags[mood]["all"][:2]
 
     def _search_items(self, query: str) -> List[Dict[str, Any]]:
-        errors = []
-        params = [
-            ("q", query),
-            ("fl[]", "identifier"),
-            ("fl[]", "title"),
-            ("fl[]", "creator"),
-            ("fl[]", "subject"),
-            ("rows", str(self.SEARCH_ROWS)),
-            ("page", "1"),
-            ("output", "json"),
-            ("sort[]", "downloads desc"),
-        ]
-
-        try:
-            response = self.session.get(
-                self.SEARCH_API,
-                params=params,
-                timeout=self.REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            docs = ((payload.get("response") or {}).get("docs") or [])
-            docs = [doc for doc in docs if doc.get("identifier")]
-            if docs:
-                return docs
-        except requests.RequestException as e:
-            errors.append(str(e))
-        except ValueError:
-            errors.append("advancedsearch 返回了无法解析的数据")
-
-        scrape_params = {
-            "q": query,
-            "fields": "identifier,title,creator,subject",
-            "count": "100",
-            "sorts": "downloads desc,identifier asc",
-        }
-        for api_url in self.SCRAPE_APIS:
-            try:
-                response = self.session.get(
-                    api_url,
-                    params=scrape_params,
-                    timeout=self.REQUEST_TIMEOUT,
-                )
-                response.raise_for_status()
-                payload = response.json()
-            except requests.RequestException as e:
-                errors.append(str(e))
-                continue
-            except ValueError:
-                errors.append("scrape 返回了无法解析的数据")
-                continue
-
-            items = payload.get("items") or []
-            docs = [item for item in items if item.get("identifier")]
-            if docs:
-                return docs[: self.SEARCH_ROWS]
-
-        if errors:
-            self.last_error = f"Internet Archive 搜索失败: {errors[-1]}"
+        if query == "__trending__":
+            endpoint = f"{self.AUDIUS_API}/tracks/trending"
+            params = {"limit": self.SEARCH_ROWS, "app_name": self.APP_NAME}
         else:
-            self.last_error = "Internet Archive 搜索暂时没有返回音乐条目。"
-        return []
+            endpoint = f"{self.AUDIUS_API}/tracks/search"
+            params = {
+                "query": query,
+                "limit": self.SEARCH_ROWS,
+                "app_name": self.APP_NAME,
+            }
 
-    def _load_metadata(self, identifier: str) -> Dict[str, Any] | None:
-        url = f"{self.METADATA_API}/{quote(identifier, safe='')}"
         try:
             response = self.session.get(
-                url,
-                timeout=self.REQUEST_TIMEOUT,
+                endpoint,
+                params=params,
+                timeout=(3.05, self.REQUEST_TIMEOUT),
             )
             response.raise_for_status()
             payload = response.json()
-        except (requests.RequestException, ValueError):
-            return None
-        return payload if payload.get("files") else None
+        except requests.RequestException as e:
+            self.last_error = f"Audius 搜索失败: {str(e)}"
+            return []
+        except ValueError:
+            self.last_error = "Audius 返回了无法解析的数据。"
+            return []
+
+        items = payload.get("data") or []
+        return [item for item in items if isinstance(item, dict) and item.get("id")]
 
     @staticmethod
     def _parse_duration(value: Any) -> int:
@@ -235,52 +156,14 @@ class SimpleMusicLibrary:
             return 0
 
     @staticmethod
-    def _clean_file_title(filename: str) -> str:
-        stem = os.path.splitext(os.path.basename(filename))[0]
-        stem = re.sub(r"[_-]+", " ", stem)
-        stem = re.sub(r"\s+", " ", stem).strip()
-        return stem
-
-    def _is_usable_audio_file(self, file_info: Dict[str, Any]) -> bool:
-        filename = str(file_info.get("name") or "")
-        lowered = filename.lower()
-        extension = os.path.splitext(lowered)[1]
-        if extension not in self.AUDIO_EXTENSIONS:
-            return False
-        if "/__macosx/" in lowered or lowered.startswith("__macosx/"):
-            return False
-        if any(marker in os.path.basename(lowered) for marker in self.SKIP_FILE_MARKERS):
-            return False
-        if str(file_info.get("private", "")).lower() == "true":
-            return False
-        raw_size = file_info.get("size")
-        if raw_size not in (None, ""):
-            try:
-                if int(float(raw_size)) <= 0:
-                    return False
-            except (TypeError, ValueError):
-                pass
-        return True
-
-    def _audio_url_variants(self, identifier: str, filename: str) -> List[str]:
-        encoded_identifier = quote(identifier, safe="")
-        encoded_filename = quote(filename, safe="/")
-        return [
-            f"{self.DOWNLOAD_BASE}/{encoded_identifier}/{encoded_filename}",
-            f"{self.STREAM_BASE}/{encoded_identifier}/{encoded_filename}",
-        ]
-
-    def _audio_mime_type(self, filename: str) -> str:
-        extension = os.path.splitext(filename.lower())[1]
-        return self.AUDIO_MIME_TYPES.get(extension, "audio/mpeg")
-
-    def _audio_mime_type_from_response(self, filename: str, content_type: str) -> str:
+    def _audio_mime_type_from_response(content_type: str) -> str:
         mime_type = content_type.split(";", 1)[0].strip().lower()
         if mime_type.startswith("audio/"):
             return mime_type
-        return self._audio_mime_type(filename)
+        return "audio/mpeg"
 
-    def _is_stream_response_usable(self, filename: str, response: requests.Response) -> bool:
+    @staticmethod
+    def _is_stream_response_usable(response: requests.Response) -> bool:
         if response.status_code not in (200, 206):
             return False
         if str(response.url).startswith("http://"):
@@ -290,9 +173,7 @@ class SimpleMusicLibrary:
         content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
         if content_type.startswith(("text/", "application/json", "application/xml")):
             return False
-        if content_type == "application/octet-stream":
-            return os.path.splitext(filename.lower())[1] in self.AUDIO_EXTENSIONS
-        if content_type and not content_type.startswith("audio/"):
+        if content_type and content_type not in ("application/octet-stream",) and not content_type.startswith("audio/"):
             return False
 
         content_length = response.headers.get("Content-Length")
@@ -300,7 +181,7 @@ class SimpleMusicLibrary:
             return False
         return True
 
-    def _check_audio_url(self, filename: str, url: str) -> Tuple[str, str] | None:
+    def _check_audio_url(self, url: str) -> Tuple[str, str] | None:
         try:
             with self.session.get(
                 url,
@@ -312,64 +193,34 @@ class SimpleMusicLibrary:
                 timeout=(3.05, self.STREAM_CHECK_TIMEOUT),
                 allow_redirects=True,
             ) as response:
-                if not self._is_stream_response_usable(filename, response):
+                if not self._is_stream_response_usable(response):
                     return None
-                mime_type = self._audio_mime_type_from_response(
-                    filename,
-                    response.headers.get("Content-Type", ""),
-                )
-                return str(response.url or url), mime_type
+                mime_type = self._audio_mime_type_from_response(response.headers.get("Content-Type", ""))
+                # Keep the Audius API endpoint, not the short-lived signed redirect URL.
+                return url, mime_type
         except requests.RequestException:
             return None
 
-    def _resolve_streamable_audio(
-        self,
-        identifier: str,
-        filename: str,
-        existing_urls: List[str] | None = None,
-    ) -> Tuple[List[str], str] | None:
-        candidates = []
-        for url in existing_urls or []:
-            if url and url not in candidates:
-                candidates.append(url)
-        for url in self._audio_url_variants(identifier, filename):
-            if url not in candidates:
-                candidates.append(url)
-
-        for url in candidates:
-            checked = self._check_audio_url(filename, url)
+    def validate_track_audio(self, track: Dict[str, Any]) -> Dict[str, Any] | None:
+        existing_urls = [str(url) for url in track.get("audio_urls", []) if url]
+        for url in existing_urls:
+            checked = self._check_audio_url(url)
             if not checked:
                 continue
-            working_url, checked_mime_type = checked
-            return [working_url], checked_mime_type
-
+            working_url, mime_type = checked
+            verified_track = dict(track)
+            verified_track["audio_url"] = working_url
+            verified_track["audio_urls"] = [working_url]
+            verified_track["audio_mime_type"] = mime_type
+            return verified_track
         return None
-
-    def validate_track_audio(self, track: Dict[str, Any]) -> Dict[str, Any] | None:
-        track_id = str(track.get("id") or "")
-        if ":" not in track_id:
-            return None
-        identifier, filename = track_id.split(":", 1)
-        resolved = self._resolve_streamable_audio(
-            identifier,
-            filename,
-            existing_urls=[str(url) for url in track.get("audio_urls", []) if url],
-        )
-        if not resolved:
-            return None
-        working_urls, mime_type = resolved
-        verified_track = dict(track)
-        verified_track["audio_url"] = working_urls[0]
-        verified_track["audio_urls"] = working_urls
-        verified_track["audio_mime_type"] = mime_type
-        return verified_track
 
     @staticmethod
     def _track_profile(text: str, mood: str) -> tuple[float, int]:
         lowered = text.lower()
-        if any(word in lowered for word in ["upbeat", "happy", "dance", "summer", "pop"]):
+        if any(word in lowered for word in ["upbeat", "happy", "dance", "summer", "pop", "electronic", "dubstep"]):
             return 0.82, 122
-        if any(word in lowered for word in ["sad", "melancholic", "piano", "ballad"]):
+        if any(word in lowered for word in ["sad", "melancholic", "melancholy", "piano", "ballad"]):
             return 0.28, 78
         if any(word in lowered for word in ["ambient", "calm", "chill", "background"]):
             return 0.42, 92
@@ -397,65 +248,66 @@ class SimpleMusicLibrary:
         )
         instrumental_hint = any(
             word in lowered
-            for word in ["instrumental", "ambient", "piano", "soundtrack", "background"]
+            for word in ["instrumental", "ambient", "piano", "soundtrack", "background", "lofi", "beat"]
         )
         if music_type == "纯音乐":
-            return not vocal_hint
+            return instrumental_hint or not vocal_hint
         if music_type == "带歌词音乐":
-            return vocal_hint or not instrumental_hint
+            # Audius metadata rarely marks lyrics explicitly, so do not over-filter.
+            return True
         return True
 
-    def _extract_tracks(
+    def _stream_url(self, track_id: str) -> str:
+        return f"{self.AUDIUS_API}/tracks/{track_id}/stream?app_name={self.APP_NAME}"
+
+    @staticmethod
+    def _source_url(track: Dict[str, Any]) -> str:
+        permalink = str(track.get("permalink") or "")
+        if permalink.startswith("http"):
+            return permalink
+        if permalink.startswith("/"):
+            return f"https://audius.co{permalink}"
+        return "https://audius.co"
+
+    def _extract_track(
         self,
-        identifier: str,
-        payload: Dict[str, Any],
+        track: Dict[str, Any],
         mood: str,
         music_type: str,
-    ) -> List[Dict[str, Any]]:
-        metadata = payload.get("metadata") or {}
-        title = self._as_text(metadata.get("title")) or identifier
-        creator = self._as_text(metadata.get("creator")) or "Internet Archive Artist"
-        subjects = self._as_text(metadata.get("subject"))
-        description = self._as_text(metadata.get("description"))
-        context = f"{title} {creator} {subjects} {description}"
+    ) -> Dict[str, Any] | None:
+        track_id = str(track.get("id") or "")
+        if not track_id:
+            return None
+
+        user = track.get("user") if isinstance(track.get("user"), dict) else {}
+        title = self._as_text(track.get("title")) or "Audius Track"
+        artist = self._as_text(user.get("name")) or self._as_text(user.get("handle")) or "Audius Artist"
+        genre = self._as_text(track.get("genre"))
+        tags = self._as_text(track.get("tags") or track.get("mood"))
+        description = self._as_text(track.get("description"))
+        context = f"{title} {artist} {genre} {tags} {description}"
         if not self._matches_music_type(context, music_type):
-            return []
+            return None
 
-        audio_files = [
-            file_info
-            for file_info in payload.get("files", [])
-            if isinstance(file_info, dict) and self._is_usable_audio_file(file_info)
-        ]
-        preference = {".mp3": 0, ".m4a": 1, ".ogg": 2, ".oga": 3, ".wav": 4}
-        audio_files.sort(key=lambda item: preference.get(os.path.splitext(item["name"].lower())[1], 9))
-
-        tracks = []
-        for file_info in audio_files[:4]:
-            filename = str(file_info["name"])
-            file_title = self._clean_file_title(filename)
-            track_name = file_title if len(audio_files) > 1 and file_title else title
-            energy, tempo = self._track_profile(f"{context} {filename}", mood)
-            track_id = f"{identifier}:{filename}"
-            audio_urls = self._audio_url_variants(identifier, filename)
-            tracks.append(
-                {
-                    "id": track_id,
-                    "name": track_name,
-                    "artist": creator,
-                    "duration": self._parse_duration(file_info.get("length")),
-                    "audio_url": audio_urls[0],
-                    "audio_urls": audio_urls,
-                    "audio_mime_type": self._audio_mime_type(filename),
-                    "lyricist": "未知",
-                    "composer": creator,
-                    "energy": energy,
-                    "tempo": tempo,
-                    "license_url": metadata.get("licenseurl") or metadata.get("license"),
-                    "source_url": f"https://archive.org/details/{quote(identifier, safe='')}",
-                    "album": title,
-                }
-            )
-        return tracks
+        energy, tempo = self._track_profile(context, mood)
+        stream_url = self._stream_url(track_id)
+        return {
+            "id": f"audius:{track_id}",
+            "provider": "Audius",
+            "name": title,
+            "artist": artist,
+            "duration": self._parse_duration(track.get("duration")),
+            "audio_url": stream_url,
+            "audio_urls": [stream_url],
+            "audio_mime_type": "audio/mpeg",
+            "lyricist": "未知",
+            "composer": artist,
+            "energy": energy,
+            "tempo": tempo,
+            "license_url": None,
+            "source_url": self._source_url(track),
+            "album": genre or "Audius",
+        }
 
     def fetch_music(
         self,
@@ -463,45 +315,27 @@ class SimpleMusicLibrary:
         limit: int = 20,
         music_type: str = "全部音乐",
     ) -> List[Dict[str, Any]]:
-        cache_key = f"{mood}:{music_type}"
+        cache_key = f"audius:{mood}:{music_type}"
         cached = self.query_cache.get(cache_key)
         if cached and time.time() - cached[0] < self.CACHE_TTL_SECONDS:
             candidates = cached[1]
         else:
             candidates = []
-            queries = [
-                self._build_query(mood, music_type),
-                self._build_query(mood, music_type, broad=True),
-            ]
+            queries = self._build_queries(mood, music_type)
             if music_type != "全部音乐":
-                queries.append(self._build_query(mood, "全部音乐", broad=True))
+                queries.extend(self._build_queries(mood, "全部音乐")[:2])
+            queries.append("__trending__")
 
             for query in queries:
                 items = self._search_items(query)
                 if not items:
                     continue
 
-                metadata_items = items[: self.METADATA_ITEMS]
-                payloads: Dict[str, Dict[str, Any]] = {}
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    futures = {
-                        executor.submit(self._load_metadata, item["identifier"]): item["identifier"]
-                        for item in metadata_items
-                    }
-                    for future in as_completed(futures):
-                        identifier = futures[future]
-                        payload = future.result()
-                        if payload:
-                            payloads[identifier] = payload
-
-                for item in metadata_items:
-                    identifier = item["identifier"]
-                    payload = payloads.get(identifier)
-                    if not payload:
+                for item in items:
+                    track = self._extract_track(item, mood, music_type)
+                    if not track:
                         continue
-                    candidates.extend(
-                        self._extract_tracks(identifier, payload, mood, music_type)
-                    )
+                    candidates.append(track)
                     if len(candidates) >= self.MAX_TRACKS:
                         break
 
@@ -515,7 +349,7 @@ class SimpleMusicLibrary:
             self.query_cache[cache_key] = (time.time(), candidates)
 
         if not candidates:
-            self.last_error = "Internet Archive 返回了条目，但没有找到可播放的音频文件。"
+            self.last_error = "Audius 没有返回可用音乐，请再试一次。"
             return []
 
         selected = random.sample(candidates, min(limit, len(candidates)))

@@ -12,7 +12,7 @@ from simple_bgm_matcher import SimpleBGMMatcher
 
 st.set_page_config(page_title="一瞬", page_icon="♪", layout="wide")
 
-MATCHER_CACHE_VERSION = "internet-archive-v2"
+MATCHER_CACHE_VERSION = "audius-v1"
 
 
 @st.cache_resource(show_spinner=False)
@@ -1046,7 +1046,7 @@ def render_result():
                     sourcesExhausted = false;
                     audio.src = sources[sourceIndex].url;
                     audio.load();
-                    setStatus("音频正在从 Internet Archive 加载，可能需要几秒。");
+                    setStatus("音频正在从 Audius 加载，可能需要几秒。");
                     if (shouldPlay) {{
                         sync();
                         audio.play().catch(() => {{
@@ -1075,7 +1075,7 @@ def render_result():
                     }}
                 }});
                 audio.addEventListener("loadstart", () => {{
-                    if (!userRequestedPlay) setStatus("音频正在从 Internet Archive 加载，可能需要几秒。");
+                    if (!userRequestedPlay) setStatus("音频正在从 Audius 加载，可能需要几秒。");
                     sync();
                 }});
                 audio.addEventListener("loadedmetadata", () => {{
