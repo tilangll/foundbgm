@@ -1013,7 +1013,7 @@ def render_result():
 
                     <div class="audio-panel">
                         <div class="player-head"><span>NOW PLAYING</span><button class="play-toggle" id="play-toggle" type="button">播放音乐</button></div>
-                        <audio id="audio" controls preload="auto">{audio_sources_html}</audio>
+                        <audio id="audio" controls preload="metadata">{audio_sources_html}</audio>
                         <div class="audio-status" id="audio-status"></div>
                     </div>
                 </div>
@@ -1026,6 +1026,7 @@ def render_result():
                 const sources = {audio_sources_js};
                 let sourceIndex = 0;
                 let userRequestedPlay = false;
+                let sourcesExhausted = false;
 
                 const setStatus = (message) => {{
                     status.textContent = message || "";
@@ -1042,6 +1043,7 @@ def render_result():
                         return;
                     }}
                     sourceIndex = index;
+                    sourcesExhausted = false;
                     audio.src = sources[sourceIndex].url;
                     audio.load();
                     setStatus("音频正在从 Internet Archive 加载，可能需要几秒。");
@@ -1056,8 +1058,10 @@ def render_result():
                 toggle.addEventListener("click", () => {{
                     if (audio.paused) {{
                         userRequestedPlay = true;
-                        if (!audio.currentSrc && sources.length) {{
-                            loadSource(sourceIndex, true);
+                        if ((sourcesExhausted || audio.error || !audio.currentSrc) && sources.length) {{
+                            const retryIndex = sourcesExhausted ? 0 : sourceIndex;
+                            setStatus("正在重新连接音频源...");
+                            loadSource(retryIndex, true);
                         }} else {{
                             setStatus("正在请求音频，网络慢时会多等几秒。");
                             sync();
@@ -1092,10 +1096,16 @@ def render_result():
                 }});
                 audio.addEventListener("error", () => {{
                     if (sourceIndex + 1 < sources.length) {{
-                        loadSource(sourceIndex + 1, userRequestedPlay);
+                        setStatus("当前音频源失败，正在切换备用源...");
+                        window.setTimeout(() => loadSource(sourceIndex + 1, userRequestedPlay), 180);
                         return;
                     }}
-                    setStatus("音频源加载失败，返回后再匹配一首试试。");
+                    sourcesExhausted = true;
+                    setStatus(
+                        userRequestedPlay
+                            ? "音频源暂时连不上，返回后再匹配一首试试。"
+                            : "音频加载较慢，点击播放会重新连接。"
+                    );
                     sync();
                 }});
                 audio.addEventListener("play", sync);

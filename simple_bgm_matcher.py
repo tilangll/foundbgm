@@ -3,12 +3,14 @@ import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from urllib.parse import quote
 
 import numpy as np
 import requests
 from PIL import Image
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class SimpleContentAnalyzer:
@@ -48,6 +50,10 @@ class SimpleMusicLibrary:
     """Small Internet Archive adapter for openly published audio items."""
 
     SEARCH_API = "https://archive.org/advancedsearch.php"
+    SCRAPE_APIS = (
+        "https://archive.org/services/search/v1/scrape",
+        "https://api.archive.org/search/v1/scrape",
+    )
     METADATA_API = "https://archive.org/metadata"
     DOWNLOAD_BASE = "https://archive.org/download"
     STREAM_BASE = "https://archive.org/serve"
@@ -58,6 +64,9 @@ class SimpleMusicLibrary:
     MAX_TRACKS = 24
     CACHE_TTL_SECONDS = 600
     REQUEST_TIMEOUT = 10
+    AUDIO_VALIDATION_LIMIT = 8
+    STREAM_CHECK_TIMEOUT = 6
+    STREAM_CHECK_RANGE = "bytes=0-2047"
     AUDIO_EXTENSIONS = {".mp3", ".ogg", ".oga", ".m4a", ".wav"}
     AUDIO_MIME_TYPES = {
         ".mp3": "audio/mpeg",
@@ -81,6 +90,19 @@ class SimpleMusicLibrary:
         self.last_error = None
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "YiShun-SceneBGM/0.1"})
+        retries = Retry(
+            total=2,
+            connect=2,
+            read=2,
+            status=2,
+            backoff_factor=0.35,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(["GET"]),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=8, pool_maxsize=8)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.query_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
         self.mood_tags = {
             "happy": {
@@ -121,6 +143,7 @@ class SimpleMusicLibrary:
         return f"{source_filter} AND ({tag_query})"
 
     def _search_items(self, query: str) -> List[Dict[str, Any]]:
+        errors = []
         params = [
             ("q", query),
             ("fl[]", "identifier"),
@@ -141,22 +164,53 @@ class SimpleMusicLibrary:
             )
             response.raise_for_status()
             payload = response.json()
+            docs = ((payload.get("response") or {}).get("docs") or [])
+            docs = [doc for doc in docs if doc.get("identifier")]
+            if docs:
+                return docs
         except requests.RequestException as e:
-            self.last_error = f"Internet Archive 搜索失败: {str(e)}"
-            return []
+            errors.append(str(e))
         except ValueError:
-            self.last_error = "Internet Archive 返回了无法解析的数据。"
-            return []
+            errors.append("advancedsearch 返回了无法解析的数据")
 
-        docs = ((payload.get("response") or {}).get("docs") or [])
-        return [doc for doc in docs if doc.get("identifier")]
+        scrape_params = {
+            "q": query,
+            "fields": "identifier,title,creator,subject",
+            "count": "100",
+            "sorts": "downloads desc,identifier asc",
+        }
+        for api_url in self.SCRAPE_APIS:
+            try:
+                response = self.session.get(
+                    api_url,
+                    params=scrape_params,
+                    timeout=self.REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except requests.RequestException as e:
+                errors.append(str(e))
+                continue
+            except ValueError:
+                errors.append("scrape 返回了无法解析的数据")
+                continue
+
+            items = payload.get("items") or []
+            docs = [item for item in items if item.get("identifier")]
+            if docs:
+                return docs[: self.SEARCH_ROWS]
+
+        if errors:
+            self.last_error = f"Internet Archive 搜索失败: {errors[-1]}"
+        else:
+            self.last_error = "Internet Archive 搜索暂时没有返回音乐条目。"
+        return []
 
     def _load_metadata(self, identifier: str) -> Dict[str, Any] | None:
         url = f"{self.METADATA_API}/{quote(identifier, safe='')}"
         try:
-            response = requests.get(
+            response = self.session.get(
                 url,
-                headers={"User-Agent": "YiShun-SceneBGM/0.1"},
                 timeout=self.REQUEST_TIMEOUT,
             )
             response.raise_for_status()
@@ -220,6 +274,96 @@ class SimpleMusicLibrary:
         extension = os.path.splitext(filename.lower())[1]
         return self.AUDIO_MIME_TYPES.get(extension, "audio/mpeg")
 
+    def _audio_mime_type_from_response(self, filename: str, content_type: str) -> str:
+        mime_type = content_type.split(";", 1)[0].strip().lower()
+        if mime_type.startswith("audio/"):
+            return mime_type
+        return self._audio_mime_type(filename)
+
+    def _is_stream_response_usable(self, filename: str, response: requests.Response) -> bool:
+        if response.status_code not in (200, 206):
+            return False
+        if str(response.url).startswith("http://"):
+            # HTTPS Streamlit pages cannot reliably play audio redirected to HTTP.
+            return False
+
+        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+        if content_type.startswith(("text/", "application/json", "application/xml")):
+            return False
+        if content_type == "application/octet-stream":
+            return os.path.splitext(filename.lower())[1] in self.AUDIO_EXTENSIONS
+        if content_type and not content_type.startswith("audio/"):
+            return False
+
+        content_length = response.headers.get("Content-Length")
+        if content_length in ("0", 0):
+            return False
+        return True
+
+    def _check_audio_url(self, filename: str, url: str) -> Tuple[str, str] | None:
+        try:
+            with self.session.get(
+                url,
+                headers={
+                    "Accept": "audio/*,*/*",
+                    "Range": self.STREAM_CHECK_RANGE,
+                },
+                stream=True,
+                timeout=(3.05, self.STREAM_CHECK_TIMEOUT),
+                allow_redirects=True,
+            ) as response:
+                if not self._is_stream_response_usable(filename, response):
+                    return None
+                mime_type = self._audio_mime_type_from_response(
+                    filename,
+                    response.headers.get("Content-Type", ""),
+                )
+                return str(response.url or url), mime_type
+        except requests.RequestException:
+            return None
+
+    def _resolve_streamable_audio(
+        self,
+        identifier: str,
+        filename: str,
+        existing_urls: List[str] | None = None,
+    ) -> Tuple[List[str], str] | None:
+        candidates = []
+        for url in existing_urls or []:
+            if url and url not in candidates:
+                candidates.append(url)
+        for url in self._audio_url_variants(identifier, filename):
+            if url not in candidates:
+                candidates.append(url)
+
+        for url in candidates:
+            checked = self._check_audio_url(filename, url)
+            if not checked:
+                continue
+            working_url, checked_mime_type = checked
+            return [working_url], checked_mime_type
+
+        return None
+
+    def validate_track_audio(self, track: Dict[str, Any]) -> Dict[str, Any] | None:
+        track_id = str(track.get("id") or "")
+        if ":" not in track_id:
+            return None
+        identifier, filename = track_id.split(":", 1)
+        resolved = self._resolve_streamable_audio(
+            identifier,
+            filename,
+            existing_urls=[str(url) for url in track.get("audio_urls", []) if url],
+        )
+        if not resolved:
+            return None
+        working_urls, mime_type = resolved
+        verified_track = dict(track)
+        verified_track["audio_url"] = working_urls[0]
+        verified_track["audio_urls"] = working_urls
+        verified_track["audio_mime_type"] = mime_type
+        return verified_track
+
     @staticmethod
     def _track_profile(text: str, mood: str) -> tuple[float, int]:
         lowered = text.lower()
@@ -282,7 +426,7 @@ class SimpleMusicLibrary:
             for file_info in payload.get("files", [])
             if isinstance(file_info, dict) and self._is_usable_audio_file(file_info)
         ]
-        preference = {".mp3": 0, ".ogg": 1, ".oga": 2, ".m4a": 3, ".wav": 4}
+        preference = {".mp3": 0, ".m4a": 1, ".ogg": 2, ".oga": 3, ".wav": 4}
         audio_files.sort(key=lambda item: preference.get(os.path.splitext(item["name"].lower())[1], 9))
 
         tracks = []
@@ -418,12 +562,13 @@ class SimpleBGMMatcher:
             if music_id in self.previous_matches:
                 continue
             score = self._calculate_match_score(content_features, music_features)
-            matches.append((score, music_features))
+            matches.append((music_id, score, music_features))
 
         if not matches:
             self.previous_matches.clear()
             matches = [
                 (
+                    music_features["id"],
                     self._calculate_match_score(content_features, music_features),
                     music_features,
                 )
@@ -434,11 +579,43 @@ class SimpleBGMMatcher:
             self.last_error = "当前没有可用的新歌曲可供推荐"
             return None
 
-        matches.sort(key=lambda item: item[0], reverse=True)
-        top_matches = matches[:3]
-        _, best_match = random.choice(top_matches)
+        matches.sort(key=lambda item: item[1], reverse=True)
+        validation_matches = matches[: self.music_library.AUDIO_VALIDATION_LIMIT]
+        verified_by_id: Dict[str, Dict[str, Any]] = {}
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(
+                    self.music_library.validate_track_audio,
+                    music_features,
+                ): music_id
+                for music_id, _, music_features in validation_matches
+            }
+            for future in as_completed(futures):
+                music_id = futures[future]
+                try:
+                    verified_track = future.result()
+                except Exception:
+                    verified_track = None
+                if verified_track:
+                    verified_by_id[music_id] = verified_track
+
+        verified_matches = [
+            (score, verified_by_id[music_id])
+            for music_id, score, _ in validation_matches
+            if music_id in verified_by_id
+        ]
+        if not verified_matches:
+            self.last_error = "匹配到了歌曲，但可播放音频源暂时连不上，请再试一次。"
+            return None
+
+        top_matches = verified_matches[:3]
+        score, best_match = random.choice(top_matches)
         self.previous_matches.add(best_match["id"])
-        return best_match
+        result = best_match.copy()
+        result["match_score"] = float(score)
+        result["content_features"] = content_features
+        return result
 
     def _calculate_match_score(
         self,
