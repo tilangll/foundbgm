@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#5477a3" />
+    <title>Memory Tape</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+      body { background: #5477a3; }
+      .memory-page { position: relative; width: 100vw; height: 100vh; height: 100dvh; overflow: hidden; }
+      .memory-page[data-mode="night"] { background: #102c54; }
+      .scene-stage { position: absolute; top: 50%; left: 50%; width: max(100vw, 177.7778dvh); height: max(100dvh, 56.25vw); aspect-ratio: 16 / 9; transform: translate(-50%, -50%); }
+      .scene-image { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center; user-select: none; -webkit-user-drag: none; }
+      .scene-transition { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+      .scene-transition[hidden] { display: none; }
+      .scene-loading {
+        position: absolute;
+        z-index: 3;
+        top: 30.2%;
+        left: 50%;
+        display: flex;
+        justify-content: center;
+        transform: translateX(-50%);
+        color: #fff;
+        font: 700 clamp(22px, 2vw, 34px)/1 "Courier New", monospace;
+        letter-spacing: 0.03em;
+        text-shadow: 0 2px 8px rgb(17 36 57 / 55%);
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      .scene-loading[hidden] { display: none; }
+      .memory-page[data-mode="night"] .scene-loading { top: 23.7%; }
+      .scene-loading span {
+        display: inline-block;
+        opacity: 0;
+        animation: loading-type 440ms cubic-bezier(0.2, 1.5, 0.4, 1) both, loading-hop 1.6s ease-in-out infinite;
+        animation-delay: calc(var(--index) * 105ms), calc(950ms + var(--index) * 105ms);
+      }
+      @keyframes loading-type {
+        from { opacity: 0; transform: translateY(9px) scale(0.8); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      @keyframes loading-hop {
+        0%, 100% { transform: translateY(0); }
+        32% { transform: translateY(-6px); }
+        56% { transform: translateY(1px); }
+      }
+      .scene-cleanup { position: absolute; inset: 0; opacity: 0; pointer-events: none; clip-path: inset(0 0 0 85.6%); }
+      .memory-page[data-mode="day"][data-player-state="tapeReady"] .scene-cleanup { opacity: 1; }
+      .lamp-control { position: absolute; z-index: 2; top: 0; left: 6.4%; width: 11.15%; padding: 0; border: 0; background: transparent; cursor: pointer; isolation: isolate; }
+      .lamp-control::before { position: absolute; z-index: -1; top: 0; left: 50%; width: 2px; height: 18px; background: #d9c3a1; content: ""; opacity: 0; transform: scaleY(0); transform-origin: top; transition: transform 300ms ease, opacity 300ms ease; }
+      .lamp-control img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; transition: transform 300ms cubic-bezier(0.18, 1.45, 0.45, 1); }
+      .lamp-control.is-pulled img { transform: translateY(18px); transition-duration: 180ms; transition-timing-function: ease-out; }
+      .lamp-control.is-pulled::before { opacity: 1; transform: scaleY(1); transition-duration: 180ms; }
+      .lamp-control:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+      .memory-page[data-mode="night"] .lamp-control { top: 2.34%; left: 7%; width: 14.35%; }
+      .memory-page[data-mode="night"] .lamp-control::before { background: #bfa984; }
+      @media (max-aspect-ratio: 3 / 4) {
+        .lamp-control { left: calc(50% - 42vw); width: clamp(140px, 36vw, 220px); }
+        .memory-page[data-mode="night"] .lamp-control { top: 0; left: calc(50% - 42vw); width: clamp(170px, 46vw, 260px); }
+      }
+
+      .cassette-dock {
+        --handle-width: 18px;
+        position: absolute;
+        z-index: 2;
+        top: 0;
+        right: 0;
+        width: calc(280px + var(--handle-width));
+        height: 100%;
+        transform: translateX(280px);
+        transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .cassette-dock:focus-within, .cassette-dock[data-pinned="true"] { transform: translateX(0); }
+      @media (hover: hover) and (pointer: fine) {
+        .cassette-dock:hover { transform: translateX(0); }
+      }
+      .dock-handle {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        display: grid;
+        place-items: center;
+        width: var(--handle-width);
+        height: 78px;
+        padding: 0;
+        transform: translateY(-50%);
+        border: 1px solid rgb(255 255 255 / 48%);
+        border-right: 0;
+        border-radius: 9px 0 0 9px;
+        background: rgb(255 255 255 / 34%);
+        color: white;
+        cursor: pointer;
+      }
+      .dock-handle span[aria-hidden="true"] { width: 3px; height: 23px; border-right: 1px solid currentColor; border-left: 1px solid currentColor; }
+      .memory-page[data-mode="night"] .dock-handle { border: 0; background: rgb(255 255 255 / 14%); }
+      .dock-handle:focus-visible, .upload-tile:focus-visible, .cassette-select:focus-visible, .cassette-remove:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+      .dock-panel {
+        position: absolute;
+        top: 0;
+        left: var(--handle-width);
+        width: 280px;
+        height: 100%;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+        scrollbar-color: rgb(255 255 255 / 50%) transparent;
+        background: rgb(255 255 255 / 24%);
+        box-shadow: -12px 0 28px rgb(27 57 93 / 8%);
+      }
+      .memory-page[data-mode="night"] .dock-panel { background: rgb(255 255 255 / 14%); }
+      .dock-content { display: grid; gap: 21px; padding: 28px 16px 30px; }
+      .upload-tile {
+        display: block;
+        width: 100%;
+        aspect-ratio: 498 / 320;
+        padding: 0;
+        border: 0;
+        background: transparent url("./assets/day-add.png") center / contain no-repeat;
+        cursor: pointer;
+        transition: filter 180ms ease;
+      }
+      .memory-page[data-mode="night"] .upload-tile { background-image: url("./assets/night-add.png"); }
+      .upload-tile:hover, .upload-tile.is-dragging { filter: brightness(1.08); }
+      .cassette-list { display: grid; gap: 18px; }
+      .cassette-card {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 498 / 313;
+        filter: drop-shadow(0 5px 7px rgb(28 55 86 / 17%));
+        transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), filter 240ms ease;
+      }
+      .cassette-card:hover, .cassette-card:focus-within { transform: translateY(-4px) rotate(-0.4deg) scale(1.018); filter: drop-shadow(0 10px 12px rgb(28 55 86 / 25%)); }
+      .cassette-card:active { transform: translateY(-1px) scale(0.99); }
+      .cassette-card.is-playing { filter: drop-shadow(0 0 8px rgb(255 244 201 / 60%)) drop-shadow(0 6px 8px rgb(28 55 86 / 18%)); }
+      .cassette-select { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
+      .cassette-preset, .cassette-shell { display: block; width: 100%; height: 100%; object-fit: contain; }
+      .cassette-preset, .cassette-shell, .cassette-picture, .cassette-night { transition: opacity 220ms ease; }
+      .cassette-shell { position: absolute; inset: 0; }
+      .cassette-night { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
+      .memory-page[data-mode="night"] .cassette-night { opacity: 1; }
+      .memory-page[data-mode="night"] .cassette-select > .cassette-preset,
+      .memory-page[data-mode="night"] .cassette-select > .cassette-shell,
+      .memory-page[data-mode="night"] .cassette-select > .cassette-picture { opacity: 0; }
+      .cassette-picture {
+        /* An inline mask also works when the page is opened directly via file://. */
+        --cassette-photo-mask: url("data:image/png;base64,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");
+        position: absolute;
+        top: 15.34%;
+        left: 8.73%;
+        width: 82.53%;
+        height: 54.31%;
+        overflow: hidden;
+        background: white;
+        -webkit-mask-image: var(--cassette-photo-mask);
+        mask-image: var(--cassette-photo-mask);
+        -webkit-mask-size: 100% 100%;
+        mask-size: 100% 100%;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+      }
+      .cassette-picture img {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        display: block;
+        width: 100%;
+        height: auto;
+        transform: translateY(-50%);
+      }
+      .cassette-picture--preset img { top: -28.24%; left: -10.58%; width: 121.17%; max-width: none; transform: none; }
+      .cassette-night .cassette-picture { background: transparent; }
+      .cassette-takeout { position: absolute; inset: 0; opacity: 0; pointer-events: none; transition: opacity 220ms ease; }
+      .cassette-card.is-playing .cassette-preset,
+      .cassette-card.is-playing .cassette-shell,
+      .cassette-card.is-playing .cassette-picture,
+      .cassette-card.is-playing .cassette-night { opacity: 0; }
+      .cassette-card.is-playing .cassette-takeout { opacity: 1; }
+      .cassette-takeout-empty { display: block; width: 100%; height: 100%; object-fit: contain; opacity: 0.6; }
+      .cassette-takeout-empty--night { display: none; }
+      .memory-page[data-mode="night"] .cassette-takeout-empty--day { display: none; }
+      .memory-page[data-mode="night"] .cassette-takeout-empty--night { display: block; }
+      .cassette-takeout-label {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        padding: 5px 12px;
+        transform: translate(-50%, -50%);
+        border-radius: 999px;
+        background: rgb(26 42 62 / 62%);
+        color: #fff;
+        font: 400 17px/1.2 "Avenir Next", "Trebuchet MS", sans-serif;
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+      }
+      .cassette-remove {
+        position: absolute;
+        z-index: 5;
+        top: 8px;
+        right: 8px;
+        display: grid;
+        place-items: center;
+        width: 25px;
+        height: 25px;
+        padding: 0;
+        border: 1px solid rgb(255 255 255 / 70%);
+        border-radius: 50%;
+        background: rgb(30 47 67 / 64%);
+        color: white;
+        font: 19px/1 Georgia, serif;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 180ms ease;
+      }
+      .cassette-card:hover .cassette-remove, .cassette-card:focus-within .cassette-remove { opacity: 1; }
+      .music-retry { position: absolute; z-index: 3; bottom: 24px; left: 50%; padding: 10px 18px; transform: translateX(-50%); border: 1px solid rgb(255 255 255 / 70%); border-radius: 999px; background: rgb(21 48 78 / 78%); color: white; font: 14px/1.3 sans-serif; cursor: pointer; }
+      .music-retry[hidden] { display: none; }
+      .match-error { position: absolute; z-index: 3; bottom: 24px; left: 50%; width: max-content; max-width: calc(100vw - 32px); margin: 0; padding: 10px 18px; transform: translateX(-50%); border: 1px solid rgb(255 255 255 / 70%); border-radius: 999px; background: rgb(21 48 78 / 84%); box-shadow: 0 6px 20px rgb(10 25 45 / 20%); color: #fff; font: 500 15px/1.35 "Avenir Next", "Trebuchet MS", sans-serif; text-align: center; }
+      .match-error[hidden] { display: none; }
+      @media (hover: none) { .cassette-remove { opacity: 1; } }
+      @media (pointer: coarse) { .cassette-dock { --handle-width: 36px; } }
+      @media (prefers-reduced-motion: reduce) {
+        .cassette-dock, .upload-tile, .cassette-card, .cassette-preset, .cassette-shell, .cassette-picture, .cassette-takeout, .cassette-remove, .lamp-control img, .lamp-control::before { transition: none; }
+        .scene-loading span { opacity: 1; animation: none; }
+      }
+      .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    </style>
+  </head>
+  <body>
+    <main class="memory-page" data-mode="day" data-player-state="closed" aria-label="Memory Tape 播放器">
+      <h1 class="sr-only">Memory Tape</h1>
+      <div class="scene-stage">
+        <img id="scene-image" class="scene-image" src="./assets/day-close.png" alt="阳光房间里悬浮的复古磁带机，磁带仓关闭。" fetchpriority="high" decoding="async" draggable="false" />
+        <!-- The tapeReady frame has a baked-in right shelf. Cover it with the clean scene behind the live dock. -->
+        <img class="scene-image scene-cleanup" src="./assets/day-close.png" alt="" aria-hidden="true" />
+        <video id="tape-transition-video" class="scene-transition" src="./assets/video-playing.mp4?v=day-restore" playsinline preload="auto" aria-hidden="true" hidden></video>
+        <div id="scene-loading" class="scene-loading" aria-hidden="true" hidden><span style="--index: 0">L</span><span style="--index: 1">o</span><span style="--index: 2">a</span><span style="--index: 3">d</span><span style="--index: 4">i</span><span style="--index: 5">n</span><span style="--index: 6">g</span><span style="--index: 7">.</span><span style="--index: 8">.</span></div>
+        <button id="lamp-control" class="lamp-control" type="button" aria-label="切换到夜晚场景">
+          <img id="lamp-image" src="./assets/lamp.png" alt="" aria-hidden="true" draggable="false" />
+        </button>
+      </div>
+      <div id="cassette-dock" class="cassette-dock" data-pinned="false">
+        <button id="dock-handle" class="dock-handle" type="button" aria-label="展开磁带架" aria-controls="dock-panel" aria-expanded="false"><span aria-hidden="true"></span></button>
+        <aside id="dock-panel" class="dock-panel" aria-label="记忆磁带架">
+          <div class="dock-content">
+            <button id="upload-tile" class="upload-tile" type="button" aria-label="上传图片制作磁带"></button>
+            <input id="cassette-upload" class="sr-only" type="file" accept="image/*" multiple tabindex="-1" />
+            <div id="cassette-list" class="cassette-list" role="list" aria-label="磁带列表"></div>
+          </div>
+        </aside>
+      </div>
+      <p id="state-announcement" class="sr-only" role="status" aria-live="polite"></p>
+      <p id="mode-announcement" class="sr-only" role="status" aria-live="polite"></p>
+      <p id="upload-announcement" class="sr-only" role="status" aria-live="polite"></p>
+      <p id="music-announcement" class="sr-only" role="status" aria-live="polite"></p>
+      <p id="match-error" class="match-error" role="alert" hidden>读带失败，可重新上传磁带试试</p>
+      <button id="music-retry" class="music-retry" type="button" hidden>播放已匹配的音乐</button>
+      <audio id="music-audio" preload="none"></audio>
+      <audio id="reading-audio" src="./audio/tape-reading-loop.mp3" preload="none" loop></audio>
+    </main>
+    <script>
+      (() => {
+        "use strict";
+
+        // Four full-scene states; the daytime cassette transition runs before "playing".
+        const PLAYER_STATES = Object.freeze({
+          closed: { src: "./assets/day-close.png", label: "默认：磁带仓关闭", alt: "阳光房间里悬浮的复古磁带机，磁带仓关闭。" },
+          open: { src: "./assets/day-open.png", label: "磁带仓打开，里面为空", alt: "复古磁带机的蓝色仓门向外打开，磁带仓为空。" },
+          tapeReady: { src: "./assets/day-close+tape.png", label: "透明磁带放在打开的仓门上", alt: "透明磁带放在打开的磁带仓门上。" },
+          playing: { src: "./assets/day-play.png", label: "仓门关闭，磁带正在播放", alt: "磁带仓关闭，播放指示灯点亮，磁带机正在播放。" },
+        });
+        // The night player top-loads its cassette, so "open" shares the closed frame.
+        const NIGHT_PLAYER_STATES = Object.freeze({
+          closed: { src: "./assets/night-close.png?v=2", label: "夜晚：空仓，播放器未开启", alt: "夜晚的户外场景，复古磁带机空仓且灯光关闭。" },
+          open: { src: "./assets/night-close.png?v=2", label: "夜晚：无需打开上盖", alt: "夜晚的复古磁带机保持关闭，磁带可从上方插入。" },
+          tapeReady: { src: "./assets/night-insert.png?v=2", label: "夜晚：磁带从上方插入一半", alt: "磁带从夜晚播放器正上方插入一半，机身灯光尚未开启。" },
+          playing: { src: "./assets/night-play.png?v=2", label: "夜晚：正在播放", alt: "夜晚的户外场景，复古磁带机亮着灯。" },
+        });
+        const FRAME_SETS = Object.freeze({ day: PLAYER_STATES, night: NIGHT_PLAYER_STATES });
+        const TRANSITION_ASSETS = Object.freeze({ day: "./assets/video-playing.mp4?v=day-restore", night: "./video/night-transition-insert2-v2-approach-fast.mp4" });
+        const LAMP_ASSETS = Object.freeze({ day: "./assets/lamp.png", night: "./assets/night-lamp.png" });
+        const MIN_READING_MS = 1400;
+        const STATE_ORDER = ["closed", "open", "tapeReady", "playing"];
+        const page = document.querySelector(".memory-page");
+        const scene = document.querySelector("#scene-image");
+        const lampControl = document.querySelector("#lamp-control");
+        const lampImage = document.querySelector("#lamp-image");
+        const stateAnnouncement = document.querySelector("#state-announcement");
+        const modeAnnouncement = document.querySelector("#mode-announcement");
+        const uploadAnnouncement = document.querySelector("#upload-announcement");
+        const dock = document.querySelector("#cassette-dock");
+        const dockHandle = document.querySelector("#dock-handle");
+        const uploadTile = document.querySelector("#upload-tile");
+        const fileInput = document.querySelector("#cassette-upload");
+        const cassetteList = document.querySelector("#cassette-list");
+        const transitionVideo = document.querySelector("#tape-transition-video");
+        const sceneLoading = document.querySelector("#scene-loading");
+        const musicAudio = document.querySelector("#music-audio");
+        const readingAudio = document.querySelector("#reading-audio");
+        const musicAnnouncement = document.querySelector("#music-announcement");
+        const matchError = document.querySelector("#match-error");
+        const musicRetry = document.querySelector("#music-retry");
+        const objectUrls = new Set();
+        const presetTracks = new Map([
+          ["cloud.png", "./audio/windswept.mp3"],
+          ["qiuqiu.png", "./audio/carefree.mp3"],
+          ["grass.png", "./audio/sunshine.mp3"],
+          ["afternoon.png", "./audio/bossa-antigua.mp3"],
+        ]);
+        let currentState = "closed";
+        let currentMode = "day";
+        let modeSwitching = false;
+        let requestId = 0;
+        let cassettePlayRequestId = 0;
+        let activeCassette = null;
+        let pendingUpload = null;
+        let activeMatchController = null;
+        let finishTransition = null;
+        let tapeTransition = null;
+        let readingAudioSrc = readingAudio.getAttribute("src");
+        let readingRequestId = 0;
+        let musicMatcher = matchUploadedImage;
+        readingAudio.volume = 0.5;
+
+        async function matchUploadedImage({ file }, { signal }) {
+          const response = await fetch("/api/match", {
+            method: "POST",
+            headers: { "Content-Type": file.type || "application/octet-stream" },
+            body: file,
+            signal,
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "音乐匹配失败");
+          return result;
+        }
+
+        function stopReading() {
+          ++readingRequestId;
+          readingAudio.pause();
+          readingAudio.currentTime = 0;
+          sceneLoading.hidden = true;
+        }
+
+        function stopTransition() {
+          if (finishTransition) finishTransition();
+          transitionVideo.pause();
+          transitionVideo.hidden = true;
+        }
+
+        function cancelPendingCassette() {
+          ++cassettePlayRequestId;
+          activeMatchController?.abort();
+          activeMatchController = null;
+          stopReading();
+          stopTransition();
+        }
+
+        function startReading() {
+          sceneLoading.hidden = true;
+          void sceneLoading.offsetWidth;
+          sceneLoading.hidden = false;
+          if (!readingAudioSrc) return;
+          const thisReading = ++readingRequestId;
+          readingAudio.currentTime = 0;
+          try {
+            void Promise.resolve(readingAudio.play()).catch((error) => {
+              if (thisReading === readingRequestId) console.warn("Could not play tape-reading audio", error);
+            });
+          } catch (error) {
+            console.warn("Could not play tape-reading audio", error);
+          }
+        }
+
+        function reportMatchFailure(detail, error) {
+          musicAnnouncement.textContent = "";
+          matchError.hidden = false;
+          window.dispatchEvent(new CustomEvent("musicmatcherror", { detail: { ...detail, error } }));
+        }
+
+        function prepareTransition(mode) {
+          const src = TRANSITION_ASSETS[mode];
+          if (transitionVideo.getAttribute("src") !== src) {
+            transitionVideo.src = src;
+            transitionVideo.load();
+          }
+        }
+
+        function playDefaultTransition({ mode }) {
+          prepareTransition(mode);
+          transitionVideo.currentTime = 0;
+          transitionVideo.muted = false;
+          transitionVideo.volume = 1;
+          transitionVideo.hidden = false;
+          return new Promise((resolve) => {
+            const finish = () => {
+              transitionVideo.removeEventListener("ended", finish);
+              transitionVideo.removeEventListener("error", finish);
+              if (finishTransition === finish) finishTransition = null;
+              resolve();
+            };
+            finishTransition = finish;
+            transitionVideo.addEventListener("ended", finish);
+            transitionVideo.addEventListener("error", finish);
+            try {
+              Promise.resolve(transitionVideo.play()).catch((error) => {
+                console.error("Could not play cassette transition", error);
+                finish();
+              });
+            } catch (error) {
+              console.error("Could not play cassette transition", error);
+              finish();
+            }
+          });
+        }
+
+        function trackSource(track) {
+          return typeof track === "string" ? track : track?.audio_url || track?.src || track?.url || null;
+        }
+
+        musicRetry.addEventListener("click", async () => {
+          try {
+            await musicAudio.play();
+            musicRetry.hidden = true;
+            musicAnnouncement.textContent = "音乐正在播放";
+          } catch (error) {
+            console.warn("Could not resume cassette music", error);
+          }
+        });
+
+        async function decodeImage(src) {
+          const image = new Image();
+          image.src = src;
+          await image.decode();
+        }
+
+        async function setPlayerState(nextState) {
+          if (!PLAYER_STATES[nextState]) throw new RangeError(`Unknown player state: ${nextState}`);
+          if (modeSwitching) return;
+          const thisRequest = ++requestId;
+          if (nextState === currentState) return;
+          const state = FRAME_SETS[currentMode][nextState];
+
+          try {
+            await decodeImage(state.src);
+          } catch {
+            if (thisRequest === requestId) console.error(`Could not load scene image: ${state.src}`);
+            return;
+          }
+          if (thisRequest !== requestId) return;
+
+          const previousState = currentState;
+          scene.src = state.src;
+          scene.alt = state.alt;
+          page.dataset.playerState = nextState;
+          stateAnnouncement.textContent = state.label;
+          currentState = nextState;
+          window.dispatchEvent(new CustomEvent("playerstatechange", { detail: { previousState, state: nextState } }));
+        }
+
+        async function setMode(nextMode, { animate = false } = {}) {
+          if (!FRAME_SETS[nextMode]) throw new RangeError(`Unknown scene mode: ${nextMode}`);
+          if (nextMode === currentMode || modeSwitching) return;
+
+          modeSwitching = true;
+          cancelPendingCassette();
+          ++requestId;
+          const previousMode = currentMode;
+          const nextFrame = FRAME_SETS[nextMode][currentState];
+          const nextLamp = LAMP_ASSETS[nextMode];
+          const shouldAnimate = animate && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          const assetsReady = Promise.all([decodeImage(nextFrame.src), decodeImage(nextLamp)]).then(
+            () => true,
+            (error) => { console.error("Could not load the next scene or lamp image", error); return false; },
+          );
+
+          try {
+            if (shouldAnimate) {
+              lampControl.classList.add("is-pulled");
+              // Future pull sound can listen for this event.
+              window.dispatchEvent(new CustomEvent("lamppull", { detail: { from: previousMode, to: nextMode } }));
+              await new Promise((resolve) => setTimeout(resolve, 180));
+            }
+            if (!(await assetsReady)) return;
+
+            scene.src = nextFrame.src;
+            scene.alt = nextFrame.alt;
+            lampImage.src = nextLamp;
+            page.dataset.mode = nextMode;
+            lampControl.setAttribute("aria-label", nextMode === "day" ? "切换到夜晚场景" : "切换到白天场景");
+            stateAnnouncement.textContent = nextFrame.label;
+            modeAnnouncement.textContent = nextMode === "day" ? "已切换到白天" : "已切换到夜晚";
+            currentMode = nextMode;
+            prepareTransition(nextMode);
+            window.dispatchEvent(new CustomEvent("modechange", { detail: { previousMode, mode: nextMode, state: currentState } }));
+          } finally {
+            lampControl.classList.remove("is-pulled");
+            if (shouldAnimate) await new Promise((resolve) => setTimeout(resolve, 300));
+            modeSwitching = false;
+            if (pendingUpload) {
+              const upload = pendingUpload;
+              pendingUpload = null;
+              void playCassette(upload.card, upload.select, upload.src, upload.name, upload.options);
+            }
+          }
+        }
+
+        lampControl.addEventListener("click", () => {
+          void setMode(currentMode === "day" ? "night" : "day", { animate: true });
+        });
+
+        function updateHandle(open) {
+          dockHandle.setAttribute("aria-expanded", String(open));
+          dockHandle.setAttribute("aria-label", open ? "收起磁带架" : "展开磁带架");
+        }
+
+        dock.addEventListener("pointerenter", () => updateHandle(true));
+        dock.addEventListener("pointerleave", () => updateHandle(dock.dataset.pinned === "true"));
+        dockHandle.addEventListener("click", () => {
+          const pinned = dock.dataset.pinned !== "true";
+          dock.dataset.pinned = String(pinned);
+          updateHandle(pinned);
+          if (!pinned) dockHandle.blur();
+        });
+
+        function restoreCassette(card) {
+          card.classList.remove("is-playing");
+          const select = card.querySelector(".cassette-select");
+          select.setAttribute("aria-pressed", "false");
+          select.setAttribute("aria-label", `播放磁带：${card.getAttribute("aria-label")}`);
+        }
+
+        function ejectCassette(card, src, name) {
+          cancelPendingCassette();
+          musicAudio.pause();
+          musicAudio.removeAttribute("src");
+          musicAudio.load();
+          musicRetry.hidden = true;
+          matchError.hidden = true;
+          restoreCassette(card);
+          activeCassette = null;
+          musicAnnouncement.textContent = `已取出${name}`;
+          void setPlayerState("closed");
+          window.dispatchEvent(new CustomEvent("cassetteeject", { detail: { src, name, mode: currentMode } }));
+        }
+
+        async function playCassette(card, select, src, name, options) {
+          if (modeSwitching) return;
+          if (activeCassette === card) {
+            ejectCassette(card, src, name);
+            return;
+          }
+          cancelPendingCassette();
+          const thisRequest = cassettePlayRequestId;
+          musicRetry.hidden = true;
+          matchError.hidden = true;
+          musicAudio.pause();
+          musicAudio.removeAttribute("src");
+          musicAudio.load();
+          if (activeCassette && activeCassette !== card) {
+            restoreCassette(activeCassette);
+          }
+          activeCassette = card;
+          card.classList.add("is-playing");
+          select.setAttribute("aria-pressed", "true");
+          select.setAttribute("aria-label", `取出磁带：${name}`);
+
+          const detail = { src, name, mode: currentMode, id: options.id || src, uploaded: Boolean(options.uploaded), file: options.file || null };
+          const controller = new AbortController();
+          activeMatchController = controller;
+          if (detail.uploaded) {
+            musicAnnouncement.textContent = `正在为${name}匹配音乐`;
+            window.dispatchEvent(new CustomEvent("musicmatchstart", { detail }));
+          }
+          const musicResult = Promise.resolve()
+            .then(() => detail.uploaded ? musicMatcher(detail, { signal: controller.signal }) : presetTracks.get(detail.id))
+            .then(
+              (track) => ({ track }),
+              (error) => ({ error }),
+            );
+          window.dispatchEvent(new CustomEvent("cassetteplayrequest", { detail }));
+          try {
+            await (tapeTransition || playDefaultTransition)(detail);
+          } catch (error) {
+            console.error("Cassette transition failed; playing without it", error);
+          }
+          if (thisRequest !== cassettePlayRequestId || modeSwitching) return;
+          await setPlayerState("playing");
+          if (thisRequest !== cassettePlayRequestId || modeSwitching) return;
+          stopTransition();
+          if (detail.uploaded) startReading();
+
+          const { track, error } = detail.uploaded
+            ? (await Promise.all([musicResult, new Promise((resolve) => setTimeout(resolve, MIN_READING_MS))]))[0]
+            : await musicResult;
+          if (thisRequest !== cassettePlayRequestId || modeSwitching) return;
+          activeMatchController = null;
+          stopReading();
+          if (error) {
+            console.error("Could not match cassette music", error);
+            reportMatchFailure(detail, error);
+            return;
+          }
+          const audioSrc = trackSource(track);
+          if (!audioSrc) {
+            if (detail.uploaded) {
+              reportMatchFailure(detail, new Error("No playable music matched"));
+            } else {
+              musicAnnouncement.textContent = `${name}的音乐尚未提供`;
+            }
+            return;
+          }
+          musicAudio.src = audioSrc;
+          musicAudio.load();
+          if (detail.uploaded) window.dispatchEvent(new CustomEvent("musicmatchend", { detail: { ...detail, track } }));
+          try {
+            await musicAudio.play();
+            if (thisRequest !== cassettePlayRequestId) return;
+            musicAnnouncement.textContent = `正在播放${name}的音乐`;
+            window.dispatchEvent(new CustomEvent("musicplay", { detail: { ...detail, track, audioSrc } }));
+          } catch (playError) {
+            if (thisRequest !== cassettePlayRequestId) return;
+            console.warn("Browser blocked cassette music playback", playError);
+            musicAnnouncement.textContent = `音乐已就绪，请再次点击${name}播放`;
+            musicRetry.hidden = false;
+          }
+        }
+
+        function createCassette(src, name, options = {}) {
+          const card = document.createElement("article");
+          card.className = "cassette-card";
+          card.setAttribute("role", "listitem");
+          card.setAttribute("aria-label", name);
+          const select = document.createElement("button");
+          select.className = "cassette-select";
+          select.type = "button";
+          select.setAttribute("aria-label", `播放磁带：${name}`);
+          select.setAttribute("aria-pressed", "false");
+          select.addEventListener("click", () => { void playCassette(card, select, src, name, options); });
+          if (options.uploaded) {
+            const shell = document.createElement("img");
+            shell.className = "cassette-shell";
+            shell.src = "./assets/tape（empty）.png";
+            shell.alt = "";
+            const picture = document.createElement("div");
+            picture.className = "cassette-picture";
+            const art = document.createElement("img");
+            art.src = src;
+            art.alt = "";
+            picture.append(art);
+            select.append(shell, picture);
+          } else {
+            const preset = document.createElement("img");
+            preset.className = "cassette-preset";
+            preset.src = src;
+            preset.alt = "";
+            select.append(preset);
+          }
+          const night = document.createElement("span");
+          night.className = "cassette-night";
+          night.setAttribute("aria-hidden", "true");
+          const nightShell = document.createElement("img");
+          nightShell.className = "cassette-shell";
+          nightShell.src = "./assets/night-tape-template.png";
+          nightShell.alt = "";
+          const nightPicture = document.createElement("span");
+          nightPicture.className = options.uploaded ? "cassette-picture" : "cassette-picture cassette-picture--preset";
+          const nightArt = document.createElement("img");
+          nightArt.src = src;
+          nightArt.alt = "";
+          nightPicture.append(nightArt);
+          night.append(nightShell, nightPicture);
+          select.append(night);
+          const takeout = document.createElement("span");
+          takeout.className = "cassette-takeout";
+          takeout.setAttribute("aria-hidden", "true");
+          const empty = document.createElement("img");
+          empty.className = "cassette-takeout-empty cassette-takeout-empty--day";
+          empty.src = "./assets/tape（empty）.png";
+          empty.alt = "";
+          const nightEmpty = document.createElement("img");
+          nightEmpty.className = "cassette-takeout-empty cassette-takeout-empty--night";
+          nightEmpty.src = "./assets/night-tape-template.png";
+          nightEmpty.alt = "";
+          const label = document.createElement("span");
+          label.className = "cassette-takeout-label";
+          label.textContent = "Take-out";
+          takeout.append(empty, nightEmpty, label);
+          select.append(takeout);
+          card.append(select);
+          if (options.removable) {
+            const remove = document.createElement("button");
+            remove.className = "cassette-remove";
+            remove.type = "button";
+            remove.textContent = "×";
+            remove.setAttribute("aria-label", `删除磁带：${name}`);
+            remove.addEventListener("click", () => {
+              if (pendingUpload?.card === card) pendingUpload = null;
+              if (activeCassette === card) {
+                ejectCassette(card, src, name);
+              }
+              card.remove();
+              objectUrls.delete(src);
+              URL.revokeObjectURL(src);
+              uploadAnnouncement.textContent = `已删除磁带：${name}`;
+            });
+            card.append(remove);
+          }
+          return card;
+        }
+
+        [
+          ["cloud.png", "云朵磁带"],
+          ["qiuqiu.png", "球球磁带"],
+          ["grass.png", "草地磁带"],
+          ["afternoon.png", "午后磁带"],
+        ].forEach(([file, name]) => cassetteList.append(createCassette(`./assets/${file}`, name, { id: file })));
+
+        function addFiles(files) {
+          let added = 0;
+          let latestUpload = null;
+          for (const file of files) {
+            if (!file.type.startsWith("image/")) continue;
+            const url = URL.createObjectURL(file);
+            objectUrls.add(url);
+            const options = { uploaded: true, removable: true, file };
+            const card = createCassette(url, file.name, options);
+            cassetteList.prepend(card);
+            latestUpload = { card, select: card.querySelector(".cassette-select"), src: url, name: file.name, options };
+            added += 1;
+          }
+          uploadAnnouncement.textContent = added ? `已制作 ${added} 盒记忆磁带` : "请选择图片文件";
+          if (latestUpload) {
+            if (modeSwitching) pendingUpload = latestUpload;
+            else void playCassette(latestUpload.card, latestUpload.select, latestUpload.src, latestUpload.name, latestUpload.options);
+          }
+        }
+
+        uploadTile.addEventListener("click", () => fileInput.click());
+        fileInput.addEventListener("change", () => {
+          addFiles(fileInput.files);
+          fileInput.value = "";
+          fileInput.blur();
+          uploadTile.blur();
+        });
+        uploadTile.addEventListener("dragover", (event) => { event.preventDefault(); uploadTile.classList.add("is-dragging"); });
+        uploadTile.addEventListener("dragleave", () => uploadTile.classList.remove("is-dragging"));
+        uploadTile.addEventListener("drop", (event) => {
+          event.preventDefault();
+          uploadTile.classList.remove("is-dragging");
+          addFiles(event.dataTransfer.files);
+        });
+        window.addEventListener("pagehide", () => {
+          pendingUpload = null;
+          cancelPendingCassette();
+          musicAudio.pause();
+          for (const url of objectUrls) URL.revokeObjectURL(url);
+        });
+
+        // Preview states with keys 1-4 or ?state=open, without controls over the artwork.
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && dock.dataset.pinned === "true") {
+            dock.dataset.pinned = "false";
+            updateHandle(false);
+            dockHandle.blur();
+            return;
+          }
+          if (event.altKey || event.ctrlKey || event.metaKey || event.repeat) return;
+          if (event.target?.closest?.("input, textarea, select, [contenteditable]")) return;
+          const state = STATE_ORDER[Number(event.key) - 1];
+          if (state) void setPlayerState(state);
+        });
+
+        window.MemoryTape = Object.freeze({
+          states: PLAYER_STATES,
+          nightStates: NIGHT_PLAYER_STATES,
+          getState: () => currentState,
+          setState: setPlayerState,
+          getMode: () => currentMode,
+          setMode,
+          setTapeTransition(handler) {
+            if (handler != null && typeof handler !== "function") throw new TypeError("Tape transition must be a function");
+            tapeTransition = handler ?? null;
+          },
+          setPresetTracks(tracks) {
+            if (!tracks || typeof tracks !== "object") throw new TypeError("Preset tracks must be an object");
+            for (const [cassetteId, track] of Object.entries(tracks)) presetTracks.set(cassetteId, track);
+          },
+          setMusicMatcher(handler) {
+            if (handler != null && typeof handler !== "function") throw new TypeError("Music matcher must be a function");
+            musicMatcher = handler ?? matchUploadedImage;
+          },
+          setReadingAudio(src) {
+            if (src != null && typeof src !== "string") throw new TypeError("Reading audio source must be a string");
+            readingAudioSrc = src || null;
+            stopReading();
+            if (readingAudioSrc) readingAudio.src = readingAudioSrc;
+            else readingAudio.removeAttribute("src");
+          },
+        });
+        const params = new URLSearchParams(location.search);
+        const initialState = params.get("state");
+        const initialMode = params.get("mode");
+        if (initialState && PLAYER_STATES[initialState]) {
+          void setPlayerState(initialState).then(() => {
+            if (initialMode === "night") void setMode("night");
+          });
+        } else if (initialMode === "night") {
+          void setMode("night");
+        }
+      })();
+    </script>
+  </body>
+</html>
